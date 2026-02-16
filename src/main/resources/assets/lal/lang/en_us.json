@@ -1,0 +1,11 @@
+{
+  "item.lal.lal_sword": "LAL Sword",
+  "item.lal.lal_bow": "LAL Bow",
+  "item.lal.lal_helmet": "LAL Helmet",
+  "item.lal.lal_chestplate": "LAL Chestplate",
+  "item.lal.lal_leggings": "LAL Leggings",
+  "item.lal.lal_boots": "LAL Boots",
+  "itemGroup.lal": "Life Authority Layer",
+  "death.attack.lal_attack": "%1$s was erased by LAL",
+  "death.attack.lal_attack.player": "%1$s was erased by %2$s using LAL"
+}

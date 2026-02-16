@@ -1,0 +1,519 @@
+package jp.mikumiku.lal.mixin;
+
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.UUID;
+import jp.mikumiku.lal.core.CombatRegistry;
+import jp.mikumiku.lal.enforcement.ImmortalEnforcer;
+import jp.mikumiku.lal.enforcement.KillEnforcer;
+import jp.mikumiku.lal.item.LALSwordItem;
+import jp.mikumiku.lal.transformer.EntityMethodHooks;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Pose;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.Level;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+@Mixin(value={LivingEntity.class}, priority=0x7FFFFFFF)
+public abstract class LivingEntityMixin {
+    public LivingEntityMixin() {
+        super();
+    }
+
+    @Inject(method={"tick"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$livingTick(CallbackInfo ci) {
+        Player player;
+        Player player22;
+        Level level;
+        LivingEntity self = (LivingEntity)(Object)this;
+        UUID uuid = self.getUUID();
+        if (!CombatRegistry.isInKillSet(uuid) && !CombatRegistry.isDeadConfirmed(uuid) && !self.level().isClientSide() && (level = self.level()) instanceof ServerLevel) {
+            CombatRegistry.KillRecord match;
+            ServerLevel sl = (ServerLevel)level;
+            if (CombatRegistry.hasKillHistoryForClass(self.getClass().getName()) && (match = CombatRegistry.findMatchingKill((Entity)self, sl.getServer().getTickCount())) != null) {
+                CombatRegistry.addToKillSet(uuid, match.attackerUuid, sl.getServer().getTickCount());
+                CombatRegistry.markDroppedLoot(uuid);
+                KillEnforcer.forceKill(self, sl, null);
+                ci.cancel();
+                return;
+            }
+        }
+        if ((CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) && (self.deathTime >= 60 || CombatRegistry.isDeadConfirmed(uuid))) {
+            ci.cancel();
+            return;
+        }
+        if (ci.isCancellable() && ci.isCancelled() && (CombatRegistry.isInImmortalSet((Entity)self) || self instanceof Player && LALSwordItem.hasLALEquipment(player22 = (Player)self) && !CombatRegistry.isInKillSet(uuid))) {
+            try {
+                Field f = CallbackInfo.class.getDeclaredField("cancelled");
+                f.setAccessible(true);
+                f.setBoolean(ci, false);
+            }
+            catch (Exception f) {
+            }
+        }
+        if (CombatRegistry.isInImmortalSet((Entity)self)) {
+            try {
+                ImmortalEnforcer.setRawDeathTime(self, 0);
+                ImmortalEnforcer.setRawDead(self, false);
+                ImmortalEnforcer.setRawHurtTime(self, 0);
+            }
+            catch (Exception ignored_player) {
+            }
+            self.deathTime = 0;
+            self.hurtTime = 0;
+            if (self.getPose() == Pose.DYING) {
+                self.setPose(Pose.STANDING);
+                self.refreshDimensions();
+            }
+            try {
+                float max = self.getMaxHealth();
+                if (max <= 0.0f) {
+                    max = 20.0f;
+                }
+                self.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(max));
+                self.setHealth(max);
+                ImmortalEnforcer.setRawHealth(self, max);
+            }
+            catch (Exception max) {
+            }
+            self.noPhysics = false;
+            self.setNoGravity(false);
+        }
+        if (self.level().isClientSide() && self instanceof Player && LALSwordItem.hasLALEquipment(player = (Player)self) && !CombatRegistry.isInKillSet(uuid)) {
+            block25: {
+                if (self.deathTime > 0) {
+                    self.deathTime = 0;
+                }
+                if (self.hurtTime > 20) {
+                    self.hurtTime = 0;
+                }
+                if (self.getPose() == Pose.DYING) {
+                    self.setPose(Pose.STANDING);
+                    self.refreshDimensions();
+                }
+                try {
+                    float dataHealth = ((Float)self.getEntityData().get(LivingEntity.DATA_HEALTH_ID)).floatValue();
+                    if (!(dataHealth <= 0.0f)) break block25;
+                    float max = self.getMaxHealth();
+                    if (max <= 0.0f) {
+                        max = 20.0f;
+                    }
+                    EntityMethodHooks.setBypass(true);
+                    try {
+                        self.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(max));
+                    }
+                    finally {
+                        EntityMethodHooks.setBypass(false);
+                    }
+                }
+                catch (Exception exception) {
+                    }
+            }
+            self.noPhysics = false;
+            self.setNoGravity(false);
+            try {
+                LivingEntityMixin.lal$resetHostileFlags(self);
+            }
+            catch (Exception exception) {
+            }
+        }
+    }
+
+    @Inject(method={"baseTick"}, at={@At(value="HEAD")})
+    private void lal$onBaseTick(CallbackInfo ci) {
+        Player player;
+        LivingEntity self = (LivingEntity)(Object)this;
+        if (self instanceof Player && LALSwordItem.hasLALEquipment(player = (Player)self) && !CombatRegistry.isInKillSet(self.getUUID()) && !CombatRegistry.isInImmortalSet(self.getUUID())) {
+            CombatRegistry.addToImmortalSet(self.getUUID());
+        }
+        if (!CombatRegistry.isInImmortalSet((Entity)self)) {
+            return;
+        }
+        if (self.deathTime > 0) {
+            self.deathTime = 0;
+        }
+        self.hurtTime = 0;
+        if (self.getPose() == Pose.DYING) {
+            self.setPose(Pose.STANDING);
+            self.refreshDimensions();
+        }
+        self.noPhysics = false;
+        self.setNoGravity(false);
+        if (self instanceof Player) {
+            player = (Player)self;
+            try {
+                float dataHealth = ((Float)self.getEntityData().get(LivingEntity.DATA_HEALTH_ID)).floatValue();
+                if (dataHealth <= 0.0f) {
+                    float max = self.getMaxHealth();
+                    if (max <= 0.0f) {
+                        max = 20.0f;
+                    }
+                    self.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(max));
+                    self.setHealth(max);
+                }
+            }
+            catch (Exception dataHealth) {
+            }
+            try {
+                float max = self.getMaxHealth();
+                if (max <= 0.0f) {
+                    max = 20.0f;
+                }
+                ImmortalEnforcer.setRawHealth(self, max);
+                ImmortalEnforcer.setRawDead(self, false);
+                ImmortalEnforcer.setRawDeathTime(self, 0);
+                ImmortalEnforcer.setRawHurtTime(self, 0);
+            }
+            catch (Exception exception) {
+            }
+        }
+    }
+
+    @Inject(method={"getHealth"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$getHealth(CallbackInfoReturnable<Float> cir) {
+        Player player;
+        LivingEntity self = (LivingEntity)(Object)this;
+        UUID uuid = self.getUUID();
+        Float forced = CombatRegistry.getForcedHealth(uuid);
+        if (forced != null) {
+            cir.setReturnValue(forced);
+            return;
+        }
+        if (CombatRegistry.isInImmortalSet((Entity)self)) {
+            float max = self.getMaxHealth();
+            cir.setReturnValue(Float.valueOf(max > 0.0f ? max : 20.0f));
+            return;
+        }
+        if (!EntityMethodHooks.isBypass() && (CombatRegistry.isInKillSet((Entity)self) || CombatRegistry.isDeadConfirmed(uuid))) {
+            cir.setReturnValue(Float.valueOf(0.0f));
+            return;
+        }
+        if (self instanceof Player && LALSwordItem.hasLALEquipment(player = (Player)self)) {
+            try {
+                float dataHealth = ((Float)self.getEntityData().get(LivingEntity.DATA_HEALTH_ID)).floatValue();
+                if (dataHealth <= 0.0f) {
+                    float max = self.getMaxHealth();
+                    cir.setReturnValue(Float.valueOf(max > 0.0f ? max : 20.0f));
+                    return;
+                }
+            }
+            catch (Exception exception) {
+            }
+        }
+        if (self.level().isClientSide()) {
+            try {
+                float dataHealth = ((Float)self.getEntityData().get(LivingEntity.DATA_HEALTH_ID)).floatValue();
+                if (dataHealth > 0.0f) {
+                    cir.setReturnValue(Float.valueOf(dataHealth));
+                }
+            }
+            catch (Exception exception) {
+            }
+        }
+    }
+
+    @Inject(method={"isDeadOrDying"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$isDeadOrDying(CallbackInfoReturnable<Boolean> cir) {
+        Player player;
+        LivingEntity self = (LivingEntity)(Object)this;
+        UUID uuid = self.getUUID();
+        Float forced = CombatRegistry.getForcedHealth(uuid);
+        if (forced != null) {
+            cir.setReturnValue(forced.floatValue() <= 0.0f);
+            return;
+        }
+        if (CombatRegistry.isInImmortalSet((Entity)self)) {
+            cir.setReturnValue(false);
+            return;
+        }
+        if (!EntityMethodHooks.isBypass() && (CombatRegistry.isInKillSet((Entity)self) || CombatRegistry.isDeadConfirmed(uuid))) {
+            cir.setReturnValue(true);
+            return;
+        }
+        if (self instanceof Player && LALSwordItem.hasLALEquipment(player = (Player)self)) {
+            try {
+                float dataHealth;
+                if (self.deathTime > 0) {
+                    self.deathTime = 0;
+                }
+                if (self.getPose() == Pose.DYING) {
+                    self.setPose(Pose.STANDING);
+                }
+                if ((dataHealth = ((Float)self.getEntityData().get(LivingEntity.DATA_HEALTH_ID)).floatValue()) <= 0.0f) {
+                    float max = self.getMaxHealth();
+                    if (max <= 0.0f) {
+                        max = 20.0f;
+                    }
+                    self.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(max));
+                }
+            }
+            catch (Exception exception) {
+            }
+            cir.setReturnValue(false);
+            return;
+        }
+        if (self.level().isClientSide()) {
+            try {
+                float dataHealth = ((Float)self.getEntityData().get(LivingEntity.DATA_HEALTH_ID)).floatValue();
+                if (dataHealth > 0.0f) {
+                    cir.setReturnValue(false);
+                }
+            }
+            catch (Exception exception) {
+            }
+        }
+    }
+
+    @Inject(method={"hurt"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$onHurt(DamageSource source, float amount, CallbackInfoReturnable<Boolean> cir) {
+        Player player;
+        LivingEntity self = (LivingEntity)(Object)this;
+        if (CombatRegistry.isInImmortalSet((Entity)self)) {
+            if (source.getMsgId().equals("lal_attack")) {
+                return;
+            }
+            cir.setReturnValue(false);
+            return;
+        }
+        if (self instanceof Player && LALSwordItem.hasLALEquipment(player = (Player)self) && !source.getMsgId().equals("lal_attack")) {
+            cir.setReturnValue(false);
+            return;
+        }
+        if (CombatRegistry.isInKillSet((Entity)self)) {
+            self.invulnerableTime = 0;
+            self.setInvulnerable(false);
+        }
+    }
+
+    @Inject(method={"die"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$onDie(DamageSource source, CallbackInfo ci) {
+        Player player;
+        LivingEntity self = (LivingEntity)(Object)this;
+        if (EntityMethodHooks.isBypass()) {
+            return;
+        }
+        if (CombatRegistry.isInImmortalSet((Entity)self)) {
+            ci.cancel();
+            return;
+        }
+        if (CombatRegistry.isInKillSet((Entity)self) || CombatRegistry.isDeadConfirmed(self.getUUID())) {
+            ci.cancel();
+            return;
+        }
+        if (self instanceof Player && LALSwordItem.hasLALEquipment(player = (Player)self) && !source.getMsgId().equals("lal_attack")) {
+            ci.cancel();
+        }
+    }
+
+    @Inject(method={"setHealth"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$onSetHealth(float health, CallbackInfo ci) {
+        Player player;
+        LivingEntity self = (LivingEntity)(Object)this;
+        if (CombatRegistry.isInImmortalSet((Entity)self)) {
+            float max = self.getMaxHealth();
+            if (max <= 0.0f) {
+                max = 20.0f;
+            }
+            if (health < max || Float.isNaN(health) || Float.isInfinite(health)) {
+                try {
+                    self.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(max));
+                }
+                catch (Exception exception) {
+                    }
+                ci.cancel();
+            }
+            return;
+        }
+        if (self instanceof Player && LALSwordItem.hasLALEquipment(player = (Player)self)) {
+            float max = self.getMaxHealth();
+            if (max <= 0.0f) {
+                max = 20.0f;
+            }
+            if (health < max || Float.isNaN(health) || Float.isInfinite(health)) {
+                try {
+                    self.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(max));
+                }
+                catch (Exception exception) {
+                    }
+                ci.cancel();
+            }
+        }
+    }
+
+    @Inject(method={"tickDeath"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$onTickDeath(CallbackInfo ci) {
+        Player player;
+        LivingEntity self = (LivingEntity)(Object)this;
+        if (CombatRegistry.isInImmortalSet((Entity)self)) {
+            ci.cancel();
+            return;
+        }
+        if (self instanceof Player && LALSwordItem.hasLALEquipment(player = (Player)self)) {
+            self.deathTime = 0;
+            self.hurtTime = 0;
+            if (self.getPose() == Pose.DYING) {
+                self.setPose(Pose.STANDING);
+            }
+            try {
+                float max = self.getMaxHealth();
+                if (max <= 0.0f) {
+                    max = 20.0f;
+                }
+                self.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(max));
+                self.setHealth(max);
+            }
+            catch (Exception max) {
+            }
+            try {
+                float max = self.getMaxHealth();
+                if (max <= 0.0f) {
+                    max = 20.0f;
+                }
+                ImmortalEnforcer.setRawHealth(self, max);
+                ImmortalEnforcer.setRawDead(self, false);
+                ImmortalEnforcer.setRawDeathTime(self, 0);
+                ImmortalEnforcer.setRawHurtTime(self, 0);
+            }
+            catch (Exception exception) {
+            }
+            self.noPhysics = false;
+            ci.cancel();
+        }
+    }
+
+    @Inject(method={"actuallyHurt"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$onActuallyHurt(DamageSource source, float amount, CallbackInfo ci) {
+        Player player;
+        LivingEntity self = (LivingEntity)(Object)this;
+        if (CombatRegistry.isInImmortalSet((Entity)self)) {
+            if (source.getMsgId().equals("lal_attack")) {
+                return;
+            }
+            ci.cancel();
+            return;
+        }
+        if (self instanceof Player && LALSwordItem.hasLALEquipment(player = (Player)self) && !source.getMsgId().equals("lal_attack")) {
+            ci.cancel();
+        }
+    }
+
+    @Inject(method={"removeAllEffects"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$onRemoveAllEffects(CallbackInfoReturnable<Boolean> cir) {
+        if (EntityMethodHooks.isBypass()) {
+            return;
+        }
+        LivingEntity self = (LivingEntity)(Object)this;
+        if (CombatRegistry.isInImmortalSet((Entity)self)) {
+            cir.setReturnValue(false);
+        }
+    }
+
+    @Inject(method={"knockback"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$onKnockback(double strength, double ratioX, double ratioZ, CallbackInfo ci) {
+        LivingEntity self = (LivingEntity)(Object)this;
+        if (CombatRegistry.isInImmortalSet((Entity)self)) {
+            ci.cancel();
+        }
+    }
+
+    @Inject(method={"shouldDropLoot"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$shouldDropLoot(CallbackInfoReturnable<Boolean> cir) {
+        LivingEntity self = (LivingEntity)(Object)this;
+        if (CombatRegistry.isInKillSet((Entity)self) || CombatRegistry.isDeadConfirmed(self.getUUID())) {
+            cir.setReturnValue(true);
+        }
+    }
+
+    @Inject(method={"shouldDropExperience"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$shouldDropExperience(CallbackInfoReturnable<Boolean> cir) {
+        LivingEntity self = (LivingEntity)(Object)this;
+        if (CombatRegistry.isInKillSet((Entity)self) || CombatRegistry.isDeadConfirmed(self.getUUID())) {
+            cir.setReturnValue(true);
+        }
+    }
+
+    @Inject(method={"tick"}, at={@At(value="TAIL")})
+    private void lal$livingTickTail(CallbackInfo ci) {
+        LivingEntity self = (LivingEntity)(Object)this;
+        boolean isProtected = CombatRegistry.isInImmortalSet((Entity)self);
+        if (!isProtected && self instanceof Player) {
+            Player player = (Player)self;
+            boolean bl = isProtected = LALSwordItem.hasLALEquipment(player) && !CombatRegistry.isInKillSet(self.getUUID());
+        }
+        if (!isProtected) {
+            return;
+        }
+        if (self.deathTime > 0) {
+            self.deathTime = 0;
+        }
+        if (self.hurtTime > 0) {
+            self.hurtTime = 0;
+        }
+        if (self.getPose() == Pose.DYING) {
+            self.setPose(Pose.STANDING);
+            self.refreshDimensions();
+        }
+        self.noPhysics = false;
+        self.setNoGravity(false);
+        try {
+            float dataHealth = ((Float)self.getEntityData().get(LivingEntity.DATA_HEALTH_ID)).floatValue();
+            if (dataHealth <= 0.0f) {
+                float max = self.getMaxHealth();
+                if (max <= 0.0f) {
+                    max = 20.0f;
+                }
+                self.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(max));
+            }
+        }
+        catch (Exception exception) {
+        }
+        try {
+            ImmortalEnforcer.setRawDead(self, false);
+            ImmortalEnforcer.setRawDeathTime(self, 0);
+        }
+        catch (Exception exception) {
+        }
+        if (self.level().isClientSide() && self instanceof Player) {
+            try {
+                LivingEntityMixin.lal$resetHostileFlags(self);
+            }
+            catch (Exception exception) {
+            }
+        }
+    }
+
+    private static void lal$resetHostileFlags(LivingEntity entity) {
+        Class<?> clazz = entity.getClass();
+        while (clazz != null && clazz != Object.class) {
+            Field[] fields;
+            try {
+                fields = clazz.getDeclaredFields();
+            }
+            catch (Throwable t) {
+                clazz = clazz.getSuperclass();
+                continue;
+            }
+            for (Field f : fields) {
+                String name;
+                if (Modifier.isStatic(f.getModifiers()) || f.getType() != Boolean.TYPE || !(name = f.getName().toLowerCase()).contains("novel") && !name.contains("dead") && !name.contains("death") && !name.contains("kill") && !name.contains("dying") && !name.contains("muteki")) continue;
+                try {
+                    f.setAccessible(true);
+                    if (!f.getBoolean(entity)) continue;
+                    f.setBoolean(entity, false);
+                }
+                catch (Exception exception) {
+                    }
+            }
+            if (clazz.getName().startsWith("net.minecraft.")) break;
+            clazz = clazz.getSuperclass();
+        }
+    }
+}
+
