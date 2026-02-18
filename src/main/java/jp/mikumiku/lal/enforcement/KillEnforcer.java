@@ -45,6 +45,7 @@ import jp.mikumiku.lal.core.EntityLedgerEntry;
 import jp.mikumiku.lal.core.LifecycleState;
 import jp.mikumiku.lal.damage.LALDamageSources;
 import jp.mikumiku.lal.enforcement.RegistryCleaner;
+import jp.mikumiku.lal.util.FieldAccessUtil;
 import jp.mikumiku.lal.transformer.EntityMethodHooks;
 import net.minecraft.advancements.CriteriaTriggers;
 import net.minecraft.nbt.CompoundTag;
@@ -108,17 +109,6 @@ public class KillEnforcer {
 
     public KillEnforcer() {
         super();
-    }
-
-    private static VarHandle findVarHandle(MethodHandles.Lookup lookup, Class<?> clazz, Class<?> type, String ... names) {
-        for (String name : names) {
-            try {
-                return lookup.findVarHandle(clazz, name, type);
-            }
-            catch (Throwable throwable) {
-            }
-        }
-        return null;
     }
 
     private static Field findFieldByType(Class<?> clazz, Class<?> fieldType, String ... names) {
@@ -315,6 +305,62 @@ public class KillEnforcer {
                 WitherBoss wither = (WitherBoss)target;
                 wither.setInvulnerableTicks(0);
             }
+
+            EntityMethodHooks.setBypass(true);
+            try {
+                DamageSource lalSource = attacker != null
+                    ? LALDamageSources.lalAttack(level, attacker)
+                    : LALDamageSources.lalAttack(level);
+
+                target.invulnerableTime = 0;
+                target.hurt(lalSource, Float.MAX_VALUE);
+                if (!target.isDeadOrDying() && !target.isRemoved()) {
+                    target.invulnerableTime = 0;
+                    target.hurt(lalSource, 100000.0f);
+                }
+                if (!target.isDeadOrDying() && !target.isRemoved()) {
+                    target.invulnerableTime = 0;
+                    target.hurt(target.damageSources().fellOutOfWorld(), 100000.0f);
+                }
+                if (!target.isDeadOrDying() && !target.isRemoved()) {
+                    target.invulnerableTime = 0;
+                    target.hurt(target.damageSources().genericKill(), 100000.0f);
+                }
+                if (!target.isDeadOrDying() && !target.isRemoved()) {
+                    target.kill();
+                }
+                if (!target.isDeadOrDying() && !target.isRemoved()) {
+                    target.setHealth(0.0f);
+                    target.die(lalSource);
+                }
+
+                boolean vanillaDied = target.isDeadOrDying() || target.isRemoved();
+                EntityMethodHooks.setBypass(false);
+
+                if (vanillaDied) {
+                    try { ((Entity)target).setSilent(true); } catch (Throwable ignored2) {}
+                    try {
+                        target.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
+                    } catch (Throwable ignored2) {}
+                    try {
+                        level.broadcastEntityEvent((Entity)target, (byte)3);
+                    } catch (Throwable ignored2) {}
+                    try {
+                        level.broadcastEntityEvent((Entity)target, (byte)60);
+                    } catch (Throwable ignored2) {}
+
+                    KillEnforcer.cleanupBossEvents((Entity)target);
+                    KillEnforcer.setLastHurtByPlayer(target, attacker);
+
+                    KillEnforcer.silentServerRemove((Entity)target, level);
+
+                    CombatRegistry.confirmDead(uuid);
+                    return;
+                }
+            } catch (Throwable ignored) {
+                EntityMethodHooks.setBypass(false);
+            }
+
             try {
                 AttributeInstance maxHealthAttr = target.getAttribute(Attributes.MAX_HEALTH);
                 if (maxHealthAttr == null) break block48;
@@ -460,49 +506,21 @@ public class KillEnforcer {
         }
         KillEnforcer.persistDeathState(target);
         KillEnforcer.cleanupBossEvents((Entity)target);
+
+        try { ((Entity)target).setSilent(true); } catch (Throwable ignored) {}
+
+        try {
+            target.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
+        } catch (Throwable ignored) {}
         Level level2 = target.level();
         if (level2 instanceof ServerLevel) {
             ServerLevel sl2 = (ServerLevel)level2;
-            try {
-                EntityInLevelCallback cb = target.levelCallback;
-                if (cb != null && cb != EntityInLevelCallback.NULL) {
-                    cb.onRemove(Entity.RemovalReason.KILLED);
-                }
-            }
-            catch (Throwable throwable) {
-            }
-            KillEnforcer.sendRemovePacketToTrackers((Entity)target, sl2);
-            KillEnforcer.removeFromTickList((Entity)target, sl2);
-            KillEnforcer.removeFromLevelCollections((Entity)target, sl2);
-            try {
-                sl2.getScoreboard().entityRemoved((Entity)target);
-            }
-            catch (Throwable throwable) {
-            }
-            try {
-                target.levelCallback = EntityInLevelCallback.NULL;
-            }
-            catch (Throwable throwable) {
-            }
+            try { sl2.broadcastEntityEvent((Entity)target, (byte)3); } catch (Throwable ignored) {}
+
+            KillEnforcer.silentServerRemove((Entity)target, sl2);
         }
-        try {
-            if (ENTITY_SET_REMOVED != null) {
-                ENTITY_SET_REMOVED.invoke((Entity)target, Entity.RemovalReason.KILLED);
-            } else {
-                target.discard();
-            }
-        }
-        catch (Throwable throwable) {
-        }
-        KillEnforcer.setRemovalReason((Entity)target, Entity.RemovalReason.KILLED);
-        target.noPhysics = true;
-        try {
-            target.setBoundingBox(new AABB(0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
-        }
-        catch (Throwable throwable) {
-        }
+
         KillEnforcer.restoreEventBus();
-        KillEnforcer.purgeExternalState((Entity)target);
     }
 
     private static void corruptAllHealthFields(LivingEntity target) {
@@ -889,6 +907,9 @@ public class KillEnforcer {
             catch (Throwable cb) {
             }
             KillEnforcer.sendRemovePacketToTrackers((Entity)target, level);
+            try {
+                jp.mikumiku.lal.network.LALNetwork.broadcastRemoveEntity(level, target.getId());
+            } catch (Throwable ignored) {}
             KillEnforcer.removeFromTickList((Entity)target, level);
             KillEnforcer.removeFromLevelCollections((Entity)target, level);
             try {
@@ -921,7 +942,7 @@ public class KillEnforcer {
             catch (Throwable mob) {
             }
             KillEnforcer.setRemovalReason((Entity)target, Entity.RemovalReason.KILLED);
-            if (!(target instanceof ServerPlayer) && !(target instanceof EnderDragon)) {
+            if (!(target instanceof ServerPlayer)) {
                 RegistryCleaner.deleteFromAllRegistries((Entity)target, level);
             }
             try {
@@ -998,6 +1019,48 @@ public class KillEnforcer {
         }
         catch (Throwable e) {
         }
+    }
+
+    private static void silentServerRemove(Entity target, ServerLevel level) {
+        try {
+            if (target instanceof Mob) {
+                Mob mob = (Mob) target;
+                try { mob.setNoAi(true); } catch (Throwable ignored) {}
+                try { mob.setTarget(null); } catch (Throwable ignored) {}
+            }
+
+            target.noPhysics = true;
+
+            try {
+                target.levelCallback = EntityInLevelCallback.NULL;
+            } catch (Throwable ignored) {}
+
+            level.getServer().tell(new net.minecraft.server.TickTask(
+                level.getServer().getTickCount() + 1,
+                () -> {
+                    try { KillEnforcer.removeFromTickList(target, level); } catch (Throwable ignored) {}
+                    if (target instanceof Mob) {
+                        try { level.navigatingMobs.remove((Mob) target); } catch (Throwable ignored) {}
+                    }
+                    try { level.getScoreboard().entityRemoved(target); } catch (Throwable ignored) {}
+                    if (target instanceof Mob) {
+                        Mob mob = (Mob) target;
+                        try { mob.goalSelector.removeAllGoals(g -> true); } catch (Throwable ignored) {}
+                        try { mob.targetSelector.removeAllGoals(g -> true); } catch (Throwable ignored) {}
+                    }
+                    if (target.isMultipartEntity()) {
+                        try {
+                            net.minecraftforge.entity.PartEntity<?>[] parts = target.getParts();
+                            if (parts != null) {
+                                for (net.minecraftforge.entity.PartEntity<?> part : parts) {
+                                    try { level.dragonParts.remove(part.getId()); } catch (Throwable ignored) {}
+                                }
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                }
+            ));
+        } catch (Throwable ignored) {}
     }
 
     private static void removeFromTickList(Entity target, ServerLevel level) {
@@ -2266,11 +2329,11 @@ public class KillEnforcer {
         block15: {
             try {
                 MethodHandles.Lookup livingLookup = MethodHandles.privateLookupIn(LivingEntity.class, MethodHandles.lookup());
-                HEALTH_HANDLE = KillEnforcer.findVarHandle(livingLookup, LivingEntity.class, Float.TYPE, "f_20958_", "health");
-                DEATH_TIME_HANDLE = KillEnforcer.findVarHandle(livingLookup, LivingEntity.class, Integer.TYPE, "f_20962_", "deathTime");
-                DEAD_HANDLE = KillEnforcer.findVarHandle(livingLookup, LivingEntity.class, Boolean.TYPE, "f_20960_", "dead");
+                HEALTH_HANDLE = FieldAccessUtil.findVarHandle(livingLookup, LivingEntity.class, Float.TYPE, "f_20958_", "health");
+                DEATH_TIME_HANDLE = FieldAccessUtil.findVarHandle(livingLookup, LivingEntity.class, Integer.TYPE, "f_20962_", "deathTime");
+                DEAD_HANDLE = FieldAccessUtil.findVarHandle(livingLookup, LivingEntity.class, Boolean.TYPE, "f_20960_", "dead");
                 MethodHandles.Lookup entityLookup = MethodHandles.privateLookupIn(Entity.class, MethodHandles.lookup());
-                REMOVAL_REASON_HANDLE = KillEnforcer.findVarHandle(entityLookup, Entity.class, Entity.RemovalReason.class, "f_146801_", "removalReason");
+                REMOVAL_REASON_HANDLE = FieldAccessUtil.findVarHandle(entityLookup, Entity.class, Entity.RemovalReason.class, "f_146801_", "removalReason");
                 if (HEALTH_HANDLE == null && (HEALTH_FIELD = KillEnforcer.findFieldByType(LivingEntity.class, Float.TYPE, "f_20958_", "health")) != null) {
                 }
                 if (DEATH_TIME_HANDLE == null && (DEATH_TIME_FIELD = KillEnforcer.findFieldByType(LivingEntity.class, Integer.TYPE, "f_20962_", "deathTime")) != null) {

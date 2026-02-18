@@ -21,6 +21,9 @@ public class CombatRegistry {
     public static final int DEATH_ANIMATION_TICKS = 60;
     private static final Set<UUID> LOOT_DROPPED = ConcurrentHashMap.newKeySet();
     private static final Map<String, List<KillRecord>> KILL_HISTORY = new ConcurrentHashMap<String, List<KillRecord>>();
+    private static final double KILL_MATCH_RADIUS_SQ = 1024.0;
+    private static final int KILL_MATCH_TICK_WINDOW = 100;
+    private static final int KILL_HISTORY_EXPIRY_TICKS = 200;
 
     public CombatRegistry() {
         super();
@@ -148,11 +151,12 @@ public class CombatRegistry {
             return null;
         }
         for (KillRecord record : records) {
-            double dz;
-            double dy;
-            double dx;
-            double distSq;
-            if (currentTick - record.killTick > 100 || !((distSq = (dx = newEntity.getX() - record.x) * dx + (dy = newEntity.getY() - record.y) * dy + (dz = newEntity.getZ() - record.z) * dz) <= 1024.0)) continue;
+            if (currentTick - record.killTick > KILL_MATCH_TICK_WINDOW) continue;
+            double dx = newEntity.getX() - record.x;
+            double dy = newEntity.getY() - record.y;
+            double dz = newEntity.getZ() - record.z;
+            double distSq = dx * dx + dy * dy + dz * dz;
+            if (distSq > KILL_MATCH_RADIUS_SQ) continue;
             return record;
         }
         return null;
@@ -164,7 +168,7 @@ public class CombatRegistry {
     }
 
     public static void cleanupKillHistory(int currentTick) {
-        KILL_HISTORY.values().forEach(list -> list.removeIf(record -> currentTick - record.killTick > 200));
+        KILL_HISTORY.values().forEach(list -> list.removeIf(record -> currentTick - record.killTick > KILL_HISTORY_EXPIRY_TICKS));
         KILL_HISTORY.entrySet().removeIf(entry -> ((List)entry.getValue()).isEmpty());
     }
 

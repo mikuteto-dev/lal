@@ -1,12 +1,15 @@
 package jp.mikumiku.lal.client;
 
 import com.mojang.blaze3d.platform.InputConstants;
+import jp.mikumiku.lal.core.CombatRegistry;
 import jp.mikumiku.lal.item.LALSwordItem;
 import jp.mikumiku.lal.transformer.EntityMethodHooks;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.DeathScreen;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.player.Player;
@@ -31,6 +34,14 @@ public class LALClientHandler {
         if (event.phase != TickEvent.Phase.END) return;
         LocalPlayer player = Minecraft.getInstance().player;
         if (player == null) return;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.screen instanceof DeathScreen) {
+            if (LALSwordItem.hasLALEquipment((Player) player)
+                    || CombatRegistry.isInImmortalSet(player.getUUID())) {
+                mc.setScreen(null);
+            }
+        }
+
         if (LALSwordItem.hasLALEquipment((Player) player)) {
             if (player.getPose() == Pose.DYING) {
                 player.setPose(Pose.STANDING);
@@ -73,5 +84,17 @@ public class LALClientHandler {
 
     public static void registerKeyMappings(RegisterKeyMappingsEvent event) {
         event.register(BOOST_KEY);
+    }
+
+    public static void handleRemoveEntity(int entityId) {
+        try {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc.level != null) {
+                Entity entity = mc.level.getEntity(entityId);
+                if (entity != null) {
+                    entity.setRemoved(Entity.RemovalReason.KILLED);
+                }
+            }
+        } catch (Exception ignored) {}
     }
 }

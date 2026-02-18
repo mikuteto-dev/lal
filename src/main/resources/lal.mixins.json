@@ -10,9 +10,12 @@
     "ServerLevelMixin",
     "ItemStackMixin",
     "SynchedEntityDataMixin",
-    "PlayerMixin"
+    "PlayerMixin",
+    "ServerGamePacketListenerImplMixin"
   ],
-  "client": [],
+  "client": [
+    "MinecraftMixin"
+  ],
   "injectors": {
     "defaultRequire": 1
   },

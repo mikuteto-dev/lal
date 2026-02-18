@@ -22,6 +22,7 @@ import net.minecraft.world.level.entity.EntityInLevelCallback;
 import net.minecraft.world.level.entity.EntityTickList;
 import net.minecraft.world.level.gameevent.DynamicGameEventListener;
 import net.minecraftforge.entity.PartEntity;
+import jp.mikumiku.lal.util.FieldAccessUtil;
 public class RegistryCleaner {
     private static final Map<String, String[]> SRG_NAMES;
 
@@ -118,7 +119,7 @@ public class RegistryCleaner {
             Field seenByField;
             ChunkMap chunkMap = level.getChunkSource().chunkMap;
             Object tracked = chunkMap.entityMap.remove(id);
-            if (tracked != null && (seenByField = RegistryCleaner.findAccessibleField(tracked.getClass(), "seenBy")) != null && (seenBy = seenByField.get(tracked)) instanceof Set) {
+            if (tracked != null && (seenByField = FieldAccessUtil.findAccessibleField(tracked.getClass(), "seenBy")) != null && (seenBy = seenByField.get(tracked)) instanceof Set) {
                 Set connections = (Set)seenBy;
                 ClientboundRemoveEntitiesPacket removePacket = new ClientboundRemoveEntitiesPacket(new int[]{id});
                 for (Object conn : connections) {
@@ -186,7 +187,7 @@ public class RegistryCleaner {
         catch (Throwable parts) {
         }
         try {
-            Field validField = RegistryCleaner.findAccessibleField(target.getClass(), "valid");
+            Field validField = FieldAccessUtil.findAccessibleField(target.getClass(), "valid");
             if (validField != null) {
                 validField.set(target, false);
             }
@@ -200,7 +201,7 @@ public class RegistryCleaner {
         }
         try {
             Object caps;
-            Method getCaps = RegistryCleaner.findAccessibleMethod(target.getClass(), "getCapabilities", new Class[0]);
+            Method getCaps = FieldAccessUtil.findAccessibleMethod(target.getClass(), "getCapabilities", new Class[0]);
             if (getCaps != null && (caps = getCaps.invoke((Object)target, new Object[0])) != null) {
                 Method invalidate = caps.getClass().getMethod("invalidate", new Class[0]);
                 invalidate.invoke(caps, new Object[0]);
@@ -243,7 +244,7 @@ public class RegistryCleaner {
                     l.remove(target);
                 }
                 try {
-                    for (Field sf : RegistryCleaner.safeGetDeclaredFields(storage.getClass())) {
+                    for (Field sf : FieldAccessUtil.safeGetDeclaredFields(storage.getClass())) {
                         try {
                             sf.setAccessible(true);
                             Object sfv = sf.get(storage);
@@ -274,34 +275,6 @@ public class RegistryCleaner {
         }
     }
 
-    private static Field findAccessibleField(Class<?> clazz, String name) {
-        while (clazz != null && clazz != Object.class) {
-            try {
-                Field f = clazz.getDeclaredField(name);
-                f.setAccessible(true);
-                return f;
-            }
-            catch (Throwable throwable) {
-                clazz = clazz.getSuperclass();
-            }
-        }
-        return null;
-    }
-
-    private static Method findAccessibleMethod(Class<?> clazz, String name, Class<?> ... params) {
-        while (clazz != null && clazz != Object.class) {
-            try {
-                Method m = clazz.getDeclaredMethod(name, params);
-                m.setAccessible(true);
-                return m;
-            }
-            catch (Throwable throwable) {
-                clazz = clazz.getSuperclass();
-            }
-        }
-        return null;
-    }
-
     private static Object findField(Object obj, String preferredName, String typeHint) {
         if (obj == null) {
             return null;
@@ -321,7 +294,7 @@ public class RegistryCleaner {
             }
         }
         for (clazz = obj.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
-            for (Field f : RegistryCleaner.safeGetDeclaredFields(clazz)) {
+            for (Field f : FieldAccessUtil.safeGetDeclaredFields(clazz)) {
                 if (!f.getType().getSimpleName().contains(typeHint)) continue;
                 try {
                     f.setAccessible(true);
@@ -339,7 +312,7 @@ public class RegistryCleaner {
             return;
         }
         for (Class<?> clazz = obj.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
-            for (Field f : RegistryCleaner.safeGetDeclaredFields(clazz)) {
+            for (Field f : FieldAccessUtil.safeGetDeclaredFields(clazz)) {
                 try {
                     f.setAccessible(true);
                     Object val = f.get(obj);
@@ -358,7 +331,7 @@ public class RegistryCleaner {
         }
         for (Class<?> clazz = obj.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
             Field[] fieldsCopy;
-            for (Field f : fieldsCopy = (Field[])RegistryCleaner.safeGetDeclaredFields(clazz).clone()) {
+            for (Field f : fieldsCopy = (Field[])FieldAccessUtil.safeGetDeclaredFields(clazz).clone()) {
                 try {
                     String className;
                     f.setAccessible(true);
@@ -387,7 +360,7 @@ public class RegistryCleaner {
             return;
         }
         for (Class<?> clazz = sectionStorage.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
-            for (Field f : RegistryCleaner.safeGetDeclaredFields(clazz)) {
+            for (Field f : FieldAccessUtil.safeGetDeclaredFields(clazz)) {
                 try {
                     Method valuesMethod;
                     Object values;
@@ -407,15 +380,6 @@ public class RegistryCleaner {
                 catch (Throwable throwable) {
                     }
             }
-        }
-    }
-
-    private static Field[] safeGetDeclaredFields(Class<?> clazz) {
-        try {
-            return clazz.getDeclaredFields();
-        }
-        catch (Throwable t) {
-            return new Field[0];
         }
     }
 

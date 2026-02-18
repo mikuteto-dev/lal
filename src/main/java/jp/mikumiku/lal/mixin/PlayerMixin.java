@@ -8,6 +8,7 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import net.minecraftforge.entity.PartEntity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -31,8 +32,15 @@ public abstract class PlayerMixin {
             return;
         }
         ServerLevel sl = (ServerLevel)level;
-        if (target instanceof LivingEntity) {
-            LivingEntity living = (LivingEntity)target;
+        Entity resolved = target;
+        if (target instanceof PartEntity) {
+            Entity parent = ((PartEntity<?>)target).getParent();
+            if (parent != null) {
+                resolved = parent;
+            }
+        }
+        if (resolved instanceof LivingEntity) {
+            LivingEntity living = (LivingEntity)resolved;
             KillEnforcer.forceKill(living, sl, (Entity)self);
         }
     }

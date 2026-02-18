@@ -1,5 +1,6 @@
 {
   "message_id": "lal_attack",
   "scaling": "always",
-  "exhaustion": 0.0
+  "exhaustion": 0.0,
+  "effects": "hurt"
 }

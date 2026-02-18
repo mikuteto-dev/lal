@@ -37,71 +37,27 @@ public class Quarantine {
         return QUARANTINED;
     }
 
+    private static void safeRun(Runnable action) {
+        try { action.run(); } catch (Exception ignored) {}
+    }
+
     public static void enforceQuarantine(LivingEntity entity) {
-        if (!Quarantine.isQuarantined((Entity)entity)) {
-            return;
-        }
-        try {
-            entity.teleportTo(entity.getX(), -10000.0, entity.getZ());
-        }
-        catch (Exception exception) {
-        }
-        try {
-            entity.setDeltaMovement(Vec3.ZERO);
-            entity.hurtMarked = true;
-        }
-        catch (Exception exception) {
-        }
-        try {
+        if (!isQuarantined((Entity) entity)) return;
+        safeRun(() -> entity.teleportTo(entity.getX(), QUARANTINE_Y, entity.getZ()));
+        safeRun(() -> { entity.setDeltaMovement(Vec3.ZERO); entity.hurtMarked = true; });
+        safeRun(() -> {
             if (entity instanceof Mob) {
-                Mob mob = (Mob)entity;
+                Mob mob = (Mob) entity;
                 mob.setNoAi(true);
                 mob.setTarget(null);
-                mob.goalSelector.getRunningGoals().forEach(w -> {
-                    try {
-                        w.stop();
-                    }
-                    catch (Exception exception) {
-                    }
-                });
-                mob.targetSelector.getRunningGoals().forEach(w -> {
-                    try {
-                        w.stop();
-                    }
-                    catch (Exception exception) {
-                    }
-                });
+                mob.goalSelector.getRunningGoals().forEach(w -> safeRun(w::stop));
+                mob.targetSelector.getRunningGoals().forEach(w -> safeRun(w::stop));
             }
-        }
-        catch (Exception exception) {
-        }
-        try {
-            entity.noPhysics = true;
-            entity.setInvulnerable(true);
-        }
-        catch (Exception exception) {
-        }
-        try {
-            entity.setInvisible(true);
-            entity.setSilent(true);
-        }
-        catch (Exception exception) {
-        }
-        try {
-            entity.stopRiding();
-            entity.getPassengers().forEach(Entity::stopRiding);
-        }
-        catch (Exception exception) {
-        }
-        try {
-            entity.setPose(Pose.DYING);
-        }
-        catch (Exception exception) {
-        }
-        try {
-            entity.invulnerableTime = Integer.MAX_VALUE;
-        }
-        catch (Exception exception) {
-        }
+        });
+        safeRun(() -> { entity.noPhysics = true; entity.setInvulnerable(true); });
+        safeRun(() -> { entity.setInvisible(true); entity.setSilent(true); });
+        safeRun(() -> { entity.stopRiding(); entity.getPassengers().forEach(Entity::stopRiding); });
+        safeRun(() -> entity.setPose(Pose.DYING));
+        safeRun(() -> entity.invulnerableTime = Integer.MAX_VALUE);
     }
 }

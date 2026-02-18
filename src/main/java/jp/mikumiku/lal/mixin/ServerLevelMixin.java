@@ -169,8 +169,8 @@ public abstract class ServerLevelMixin {
                 ghost.setBoundingBox(EMPTY_AABB);
                 ghost.noPhysics = true;
             }
-            catch (Exception ignored_entry) {
-                }
+            catch (Exception e) {
+            }
             ServerLevelMixin.lal$forceRemoveEntity(ghost);
             ++repairsThisTick;
         }
@@ -182,7 +182,7 @@ public abstract class ServerLevelMixin {
                 entity.setBoundingBox(EMPTY_AABB);
                 entity.noPhysics = true;
             }
-            catch (Exception living2) {}
+            catch (Exception e) {}
         }
         CombatRegistry.cleanupKillHistory(tickCount);
         for (UUID uuid : CombatRegistry.getImmortalSet()) {
@@ -206,16 +206,6 @@ public abstract class ServerLevelMixin {
     private void lal$onAddFreshEntity(Entity entity, CallbackInfoReturnable<Boolean> cir) {
         if (CombatRegistry.isDeadConfirmed(entity.getUUID()) || CombatRegistry.isInKillSet(entity.getUUID())) {
             cir.setReturnValue(false);
-            return;
-        }
-        if (!(entity instanceof LivingEntity)) {
-            return;
-        }
-        ServerLevel level = (ServerLevel)(Object)this;
-        int tick = level.getServer().getTickCount();
-        CombatRegistry.KillRecord match = CombatRegistry.findMatchingKill(entity, tick);
-        if (match != null) {
-            cir.setReturnValue(false);
         }
     }
 
@@ -229,48 +219,46 @@ public abstract class ServerLevelMixin {
     }
 
     private static void lal$forceRemoveEntity(Entity entity) {
-        block13: {
+        try {
+            Field removalField = null;
             try {
-                Field removalField = null;
-                try {
-                    removalField = Entity.class.getDeclaredField("f_146795_");
-                }
-                catch (NoSuchFieldException e) {
-                    try {
-                        removalField = Entity.class.getDeclaredField("removalReason");
-                    }
-                    catch (NoSuchFieldException noSuchFieldException) {
-                                }
-                }
-                if (removalField != null) {
-                    removalField.setAccessible(true);
-                    removalField.set(entity, Entity.RemovalReason.KILLED);
-                }
-                Field callbackField = null;
-                try {
-                    callbackField = Entity.class.getDeclaredField("f_146801_");
-                }
-                catch (NoSuchFieldException e) {
-                    try {
-                        callbackField = Entity.class.getDeclaredField("levelCallback");
-                    }
-                    catch (NoSuchFieldException noSuchFieldException) {
-                                }
-                }
-                if (callbackField == null) break block13;
-                callbackField.setAccessible(true);
-                Object callback = callbackField.get(entity);
-                if (!(callback instanceof EntityInLevelCallback)) break block13;
-                EntityInLevelCallback elc = (EntityInLevelCallback)callback;
-                try {
-                    elc.onRemove(Entity.RemovalReason.KILLED);
-                }
-                catch (Exception exception) {
-                        }
-                callbackField.set(entity, EntityInLevelCallback.NULL);
+                removalField = Entity.class.getDeclaredField("f_146795_");
             }
-            catch (Exception exception) {
+            catch (NoSuchFieldException e) {
+                try {
+                    removalField = Entity.class.getDeclaredField("removalReason");
                 }
+                catch (NoSuchFieldException e2) {
+                }
+            }
+            if (removalField != null) {
+                removalField.setAccessible(true);
+                removalField.set(entity, Entity.RemovalReason.KILLED);
+            }
+            Field callbackField = null;
+            try {
+                callbackField = Entity.class.getDeclaredField("f_146801_");
+            }
+            catch (NoSuchFieldException e) {
+                try {
+                    callbackField = Entity.class.getDeclaredField("levelCallback");
+                }
+                catch (NoSuchFieldException e2) {
+                }
+            }
+            if (callbackField == null) return;
+            callbackField.setAccessible(true);
+            Object callback = callbackField.get(entity);
+            if (!(callback instanceof EntityInLevelCallback)) return;
+            EntityInLevelCallback elc = (EntityInLevelCallback)callback;
+            try {
+                elc.onRemove(Entity.RemovalReason.KILLED);
+            }
+            catch (Exception e) {
+            }
+            callbackField.set(entity, EntityInLevelCallback.NULL);
+        }
+        catch (Exception e) {
         }
     }
 }

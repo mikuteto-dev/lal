@@ -242,17 +242,20 @@ public abstract class EntityMixin {
 
     @Inject(method={"tick"}, at={@At(value="HEAD")}, cancellable=true)
     private void lal$tick(CallbackInfo ci) {
-        UUID uuid;
-        Entity self;
-        block4: {
-            block5: {
-                self = (Entity)(Object)this;
-                uuid = self.getUUID();
-                if (!CombatRegistry.isInKillSet(uuid) && !CombatRegistry.isDeadConfirmed(uuid)) break block4;
-                if (!(self instanceof LivingEntity)) break block5;
-                LivingEntity living = (LivingEntity)self;
-                if (living.deathTime < 60 && !CombatRegistry.isDeadConfirmed(uuid)) break block4;
+        Entity self = (Entity)(Object)this;
+        UUID uuid = self.getUUID();
+        boolean shouldCancel = false;
+        if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) {
+            if (self instanceof LivingEntity) {
+                LivingEntity living = (LivingEntity) self;
+                if (living.deathTime >= 60 || CombatRegistry.isDeadConfirmed(uuid)) {
+                    shouldCancel = true;
+                }
+            } else {
+                shouldCancel = true;
             }
+        }
+        if (shouldCancel) {
             ci.cancel();
             return;
         }

@@ -4,11 +4,13 @@ import java.util.UUID;
 import jp.mikumiku.lal.agent.LALAgentLoader;
 import jp.mikumiku.lal.client.LALClientHandler;
 import jp.mikumiku.lal.core.CombatRegistry;
+import jp.mikumiku.lal.enforcement.EnforcementDaemon;
 import jp.mikumiku.lal.enforcement.KillEnforcer;
 import jp.mikumiku.lal.item.LALArmorItem;
 import jp.mikumiku.lal.item.LALArmorMaterial;
 import jp.mikumiku.lal.item.LALBowItem;
 import jp.mikumiku.lal.item.LALSwordItem;
+import jp.mikumiku.lal.network.LALNetwork;
 import jp.mikumiku.lal.transformer.LALTransformer;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
@@ -32,6 +34,7 @@ import net.minecraftforge.eventbus.api.EventPriority;
 import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 import net.minecraftforge.fml.loading.FMLEnvironment;
 import net.minecraftforge.registries.DeferredRegister;
@@ -69,9 +72,21 @@ public class LifeAuthorityLayer {
         }
         try {
             LALAgentLoader.load();
-        }
-        catch (Exception e) {
-        }
+        } catch (Exception e) {}
+
+        try {
+            EnforcementDaemon.start();
+        } catch (Exception e) {}
+
+        modBus.addListener(this::onCommonSetup);
+    }
+
+    private void onCommonSetup(net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent event) {
+        event.enqueueWork(() -> {
+            try {
+                LALNetwork.register();
+            } catch (Exception ignored) {}
+        });
     }
 
     @SubscribeEvent

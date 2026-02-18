@@ -5,16 +5,13 @@ import java.lang.reflect.Modifier;
 import java.util.UUID;
 import jp.mikumiku.lal.core.CombatRegistry;
 import jp.mikumiku.lal.enforcement.ImmortalEnforcer;
-import jp.mikumiku.lal.enforcement.KillEnforcer;
 import jp.mikumiku.lal.item.LALSwordItem;
 import jp.mikumiku.lal.transformer.EntityMethodHooks;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.level.Level;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -30,32 +27,23 @@ public abstract class LivingEntityMixin {
     @Inject(method={"tick"}, at={@At(value="HEAD")}, cancellable=true)
     private void lal$livingTick(CallbackInfo ci) {
         Player player;
-        Player player22;
-        Level level;
         LivingEntity self = (LivingEntity)(Object)this;
         UUID uuid = self.getUUID();
-        if (!CombatRegistry.isInKillSet(uuid) && !CombatRegistry.isDeadConfirmed(uuid) && !self.level().isClientSide() && (level = self.level()) instanceof ServerLevel) {
-            CombatRegistry.KillRecord match;
-            ServerLevel sl = (ServerLevel)level;
-            if (CombatRegistry.hasKillHistoryForClass(self.getClass().getName()) && (match = CombatRegistry.findMatchingKill((Entity)self, sl.getServer().getTickCount())) != null) {
-                CombatRegistry.addToKillSet(uuid, match.attackerUuid, sl.getServer().getTickCount());
-                CombatRegistry.markDroppedLoot(uuid);
-                KillEnforcer.forceKill(self, sl, null);
-                ci.cancel();
-                return;
-            }
-        }
         if ((CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) && (self.deathTime >= 60 || CombatRegistry.isDeadConfirmed(uuid))) {
             ci.cancel();
             return;
         }
-        if (ci.isCancellable() && ci.isCancelled() && (CombatRegistry.isInImmortalSet((Entity)self) || self instanceof Player && LALSwordItem.hasLALEquipment(player22 = (Player)self) && !CombatRegistry.isInKillSet(uuid))) {
-            try {
-                Field f = CallbackInfo.class.getDeclaredField("cancelled");
-                f.setAccessible(true);
-                f.setBoolean(ci, false);
-            }
-            catch (Exception f) {
+        if (ci.isCancellable() && ci.isCancelled()) {
+            Player playerRef = self instanceof Player ? (Player) self : null;
+            if (CombatRegistry.isInImmortalSet((Entity)self) ||
+                    (playerRef != null && LALSwordItem.hasLALEquipment(playerRef) && !CombatRegistry.isInKillSet(uuid))) {
+                try {
+                    Field f = CallbackInfo.class.getDeclaredField("cancelled");
+                    f.setAccessible(true);
+                    f.setBoolean(ci, false);
+                }
+                catch (Exception e) {
+                }
             }
         }
         if (CombatRegistry.isInImmortalSet((Entity)self)) {
@@ -64,7 +52,7 @@ public abstract class LivingEntityMixin {
                 ImmortalEnforcer.setRawDead(self, false);
                 ImmortalEnforcer.setRawHurtTime(self, 0);
             }
-            catch (Exception ignored_player) {
+            catch (Exception e) {
             }
             self.deathTime = 0;
             self.hurtTime = 0;
@@ -81,26 +69,25 @@ public abstract class LivingEntityMixin {
                 self.setHealth(max);
                 ImmortalEnforcer.setRawHealth(self, max);
             }
-            catch (Exception max) {
+            catch (Exception e) {
             }
             self.noPhysics = false;
             self.setNoGravity(false);
         }
         if (self.level().isClientSide() && self instanceof Player && LALSwordItem.hasLALEquipment(player = (Player)self) && !CombatRegistry.isInKillSet(uuid)) {
-            block25: {
-                if (self.deathTime > 0) {
-                    self.deathTime = 0;
-                }
-                if (self.hurtTime > 20) {
-                    self.hurtTime = 0;
-                }
-                if (self.getPose() == Pose.DYING) {
-                    self.setPose(Pose.STANDING);
-                    self.refreshDimensions();
-                }
-                try {
-                    float dataHealth = ((Float)self.getEntityData().get(LivingEntity.DATA_HEALTH_ID)).floatValue();
-                    if (!(dataHealth <= 0.0f)) break block25;
+            if (self.deathTime > 0) {
+                self.deathTime = 0;
+            }
+            if (self.hurtTime > 20) {
+                self.hurtTime = 0;
+            }
+            if (self.getPose() == Pose.DYING) {
+                self.setPose(Pose.STANDING);
+                self.refreshDimensions();
+            }
+            try {
+                float dataHealth = ((Float)self.getEntityData().get(LivingEntity.DATA_HEALTH_ID)).floatValue();
+                if (dataHealth <= 0.0f) {
                     float max = self.getMaxHealth();
                     if (max <= 0.0f) {
                         max = 20.0f;
@@ -113,15 +100,15 @@ public abstract class LivingEntityMixin {
                         EntityMethodHooks.setBypass(false);
                     }
                 }
-                catch (Exception exception) {
-                    }
+            }
+            catch (Exception e) {
             }
             self.noPhysics = false;
             self.setNoGravity(false);
             try {
                 LivingEntityMixin.lal$resetHostileFlags(self);
             }
-            catch (Exception exception) {
+            catch (Exception e) {
             }
         }
     }
@@ -159,7 +146,7 @@ public abstract class LivingEntityMixin {
                     self.setHealth(max);
                 }
             }
-            catch (Exception dataHealth) {
+            catch (Exception e) {
             }
             try {
                 float max = self.getMaxHealth();
@@ -171,7 +158,7 @@ public abstract class LivingEntityMixin {
                 ImmortalEnforcer.setRawDeathTime(self, 0);
                 ImmortalEnforcer.setRawHurtTime(self, 0);
             }
-            catch (Exception exception) {
+            catch (Exception e) {
             }
         }
     }
@@ -369,7 +356,7 @@ public abstract class LivingEntityMixin {
                 self.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(max));
                 self.setHealth(max);
             }
-            catch (Exception max) {
+            catch (Exception e) {
             }
             try {
                 float max = self.getMaxHealth();
@@ -381,7 +368,7 @@ public abstract class LivingEntityMixin {
                 ImmortalEnforcer.setRawDeathTime(self, 0);
                 ImmortalEnforcer.setRawHurtTime(self, 0);
             }
-            catch (Exception exception) {
+            catch (Exception e) {
             }
             self.noPhysics = false;
             ci.cancel();
@@ -445,7 +432,7 @@ public abstract class LivingEntityMixin {
         boolean isProtected = CombatRegistry.isInImmortalSet((Entity)self);
         if (!isProtected && self instanceof Player) {
             Player player = (Player)self;
-            boolean bl = isProtected = LALSwordItem.hasLALEquipment(player) && !CombatRegistry.isInKillSet(self.getUUID());
+            isProtected = LALSwordItem.hasLALEquipment(player) && !CombatRegistry.isInKillSet(self.getUUID());
         }
         if (!isProtected) {
             return;

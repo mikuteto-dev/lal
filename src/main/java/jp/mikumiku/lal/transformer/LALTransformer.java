@@ -1,238 +1,568 @@
 package jp.mikumiku.lal.transformer;
 
-import cpw.mods.modlauncher.LaunchPluginHandler;
-import cpw.mods.modlauncher.Launcher;
 import cpw.mods.modlauncher.serviceapi.ILaunchPluginService;
-import java.lang.reflect.Field;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import jp.mikumiku.lal.agent.LALAgent;
-import jp.mikumiku.lal.transformer.LALPlugin;
 import org.objectweb.asm.Label;
-import org.objectweb.asm.tree.AbstractInsnNode;
-import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.InsnList;
-import org.objectweb.asm.tree.InsnNode;
-import org.objectweb.asm.tree.JumpInsnNode;
-import org.objectweb.asm.tree.LabelNode;
-import org.objectweb.asm.tree.MethodInsnNode;
-import org.objectweb.asm.tree.MethodNode;
-import org.objectweb.asm.tree.VarInsnNode;
+import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.tree.*;
+
 public class LALTransformer {
     private static final String HOOKS = "jp/mikumiku/lal/transformer/EntityMethodHooks";
     private static boolean initialized = false;
     private static final AtomicInteger transformedClasses = new AtomicInteger(0);
     private static final AtomicInteger transformedMethods = new AtomicInteger(0);
     private static final AtomicInteger skippedClasses = new AtomicInteger(0);
-    private static final Set<String> TARGET_SIGS = Set.of("getHealth()F", "m_21223_()F", "isDeadOrDying()Z", "m_21224_()Z", "isAlive()Z", "m_6084_()Z", "isRemoved()Z", "m_240725_()Z", "m_213877_()Z", "getRemovalReason()Lnet/minecraft/world/entity/Entity$RemovalReason;", "m_146911_()Lnet/minecraft/world/entity/Entity$RemovalReason;");
+
+
+    enum HookType {
+        HEAD_VOID,
+        HEAD_RETURN,
+        HEAD_NOCANCEL,
+        CALLSITE
+    }
+
+    enum ReturnType {
+        VOID(Opcodes.RETURN, -1),
+        BOOLEAN(Opcodes.IRETURN, Opcodes.DUP),
+        INT(Opcodes.IRETURN, Opcodes.DUP),
+        FLOAT(Opcodes.FRETURN, Opcodes.DUP),
+        DOUBLE(Opcodes.DRETURN, Opcodes.DUP2),
+        OBJECT(Opcodes.ARETURN, Opcodes.DUP);
+
+        final int returnOpcode;
+        final int dupOpcode;
+
+        ReturnType(int returnOpcode, int dupOpcode) {
+            this.returnOpcode = returnOpcode;
+            this.dupOpcode = dupOpcode;
+        }
+    }
+
+    static class MethodMapping {
+        final String srgName;
+        final String mcpName;
+        final String descriptor;
+        final ReturnType returnType;
+        final Set<HookType> hookTypes;
+        final String headJudgeMethod;
+        final String headJudgeDesc;
+        final String headReplaceMethod;
+        final String headReplaceDesc;
+        final String headNoCancelMethod;
+        final String headNoCancelDesc;
+        final int headNoCancelArgSlots;
+        final String callsiteHookMethod;
+        final String callsiteHookDesc;
+
+        MethodMapping(String srgName, String mcpName, String descriptor, ReturnType returnType,
+                      Set<HookType> hookTypes, String headJudgeMethod, String headJudgeDesc,
+                      String headReplaceMethod, String headReplaceDesc,
+                      String headNoCancelMethod, String headNoCancelDesc, int headNoCancelArgSlots,
+                      String callsiteHookMethod, String callsiteHookDesc) {
+            this.srgName = srgName;
+            this.mcpName = mcpName;
+            this.descriptor = descriptor;
+            this.returnType = returnType;
+            this.hookTypes = hookTypes;
+            this.headJudgeMethod = headJudgeMethod;
+            this.headJudgeDesc = headJudgeDesc;
+            this.headReplaceMethod = headReplaceMethod;
+            this.headReplaceDesc = headReplaceDesc;
+            this.headNoCancelMethod = headNoCancelMethod;
+            this.headNoCancelDesc = headNoCancelDesc;
+            this.headNoCancelArgSlots = headNoCancelArgSlots;
+            this.callsiteHookMethod = callsiteHookMethod;
+            this.callsiteHookDesc = callsiteHookDesc;
+        }
+
+        static class Builder {
+            private final String srgName;
+            private final String mcpName;
+            private final String descriptor;
+            private final ReturnType returnType;
+            private Set<HookType> hookTypes = EnumSet.noneOf(HookType.class);
+            private String headJudgeMethod, headJudgeDesc;
+            private String headReplaceMethod, headReplaceDesc;
+            private String headNoCancelMethod, headNoCancelDesc;
+            private int headNoCancelArgSlots;
+            private String callsiteHookMethod, callsiteHookDesc;
+
+            Builder(String srg, String mcp, String desc, ReturnType ret) {
+                this.srgName = srg;
+                this.mcpName = mcp;
+                this.descriptor = desc;
+                this.returnType = ret;
+            }
+
+            Builder headVoid(String judgeMethod) {
+                hookTypes.add(HookType.HEAD_VOID);
+                this.headJudgeMethod = judgeMethod;
+                this.headJudgeDesc = "(Ljava/lang/Object;)Z";
+                return this;
+            }
+
+            Builder headVoid(String judgeMethod, String judgeDesc) {
+                hookTypes.add(HookType.HEAD_VOID);
+                this.headJudgeMethod = judgeMethod;
+                this.headJudgeDesc = judgeDesc;
+                return this;
+            }
+
+            Builder headReturn(String judgeMethod, String replaceMethod, String replaceDesc) {
+                hookTypes.add(HookType.HEAD_RETURN);
+                this.headJudgeMethod = judgeMethod;
+                this.headJudgeDesc = "(Ljava/lang/Object;)Z";
+                this.headReplaceMethod = replaceMethod;
+                this.headReplaceDesc = replaceDesc;
+                return this;
+            }
+
+            Builder headReturn(String judgeMethod, String judgeDesc, String replaceMethod, String replaceDesc) {
+                hookTypes.add(HookType.HEAD_RETURN);
+                this.headJudgeMethod = judgeMethod;
+                this.headJudgeDesc = judgeDesc;
+                this.headReplaceMethod = replaceMethod;
+                this.headReplaceDesc = replaceDesc;
+                return this;
+            }
+
+            Builder headNoCancel(String hookMethod, String hookDesc, int argSlots) {
+                hookTypes.add(HookType.HEAD_NOCANCEL);
+                this.headNoCancelMethod = hookMethod;
+                this.headNoCancelDesc = hookDesc;
+                this.headNoCancelArgSlots = argSlots;
+                return this;
+            }
+
+            Builder callsite(String method, String desc) {
+                hookTypes.add(HookType.CALLSITE);
+                this.callsiteHookMethod = method;
+                this.callsiteHookDesc = desc;
+                return this;
+            }
+
+            MethodMapping build() {
+                return new MethodMapping(srgName, mcpName, descriptor, returnType, hookTypes,
+                        headJudgeMethod, headJudgeDesc, headReplaceMethod, headReplaceDesc,
+                        headNoCancelMethod, headNoCancelDesc, headNoCancelArgSlots,
+                        callsiteHookMethod, callsiteHookDesc);
+            }
+        }
+    }
+
+    private static final List<MethodMapping> METHOD_MAPPINGS = new ArrayList<>();
+    private static final Set<String> TARGET_SIGS = new HashSet<>();
+    private static final Set<String> TARGET_METHOD_NAMES = new HashSet<>();
+
+    static {
+        add(new MethodMapping.Builder("m_21223_", "getHealth", "()F", ReturnType.FLOAT)
+                .headReturn("shouldReplaceMethod", "replaceGetHealth", "(Ljava/lang/Object;)F")
+                .callsite("getHealth", "(Ljava/lang/Object;F)F")
+                .build());
+
+        add(new MethodMapping.Builder("m_21224_", "isDeadOrDying", "()Z", ReturnType.BOOLEAN)
+                .headReturn("shouldReplaceMethod", "replaceIsDeadOrDying", "(Ljava/lang/Object;)Z")
+                .callsite("isDeadOrDying", "(Ljava/lang/Object;Z)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_6084_", "isAlive", "()Z", ReturnType.BOOLEAN)
+                .headReturn("shouldReplaceMethod", "replaceIsAlive", "(Ljava/lang/Object;)Z")
+                .callsite("isAlive", "(Ljava/lang/Object;Z)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_213877_", "isRemoved", "()Z", ReturnType.BOOLEAN)
+                .headReturn("shouldReplaceMethod", "replaceIsRemoved", "(Ljava/lang/Object;)Z")
+                .callsite("isRemoved", "(Ljava/lang/Object;Z)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_146911_", "getRemovalReason", "()Lnet/minecraft/world/entity/Entity$RemovalReason;", ReturnType.OBJECT)
+                .headReturn("shouldReplaceMethod", "replaceGetRemovalReason", "(Ljava/lang/Object;)Lnet/minecraft/world/entity/Entity$RemovalReason;")
+                .callsite("getRemovalReason", "(Ljava/lang/Object;Lnet/minecraft/world/entity/Entity$RemovalReason;)Lnet/minecraft/world/entity/Entity$RemovalReason;")
+                .build());
+
+        add(new MethodMapping.Builder("m_6087_", "canBeCollidedWith", "()Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockCanBeCollidedWith", "replaceCanBeCollidedWith", "(Ljava/lang/Object;)Z")
+                .callsite("canBeCollidedWith", "(Ljava/lang/Object;Z)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_6863_", "isPickable", "()Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockIsPickable", "replaceIsPickable", "(Ljava/lang/Object;)Z")
+                .callsite("isPickable", "(Ljava/lang/Object;Z)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_20191_", "getBoundingBox", "()Lnet/minecraft/world/phys/AABB;", ReturnType.OBJECT)
+                .headReturn("shouldBlockGetBoundingBox", "replaceGetBoundingBox", "(Ljava/lang/Object;)Lnet/minecraft/world/phys/AABB;")
+                .callsite("getBoundingBox", "(Ljava/lang/Object;Lnet/minecraft/world/phys/AABB;)Lnet/minecraft/world/phys/AABB;")
+                .build());
+
+        add(new MethodMapping.Builder("m_6469_", "hurt", "(Lnet/minecraft/world/damagesource/DamageSource;F)Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockHurt", "replaceHurt", "(Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_21165_", "removeAllEffects", "()Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockRemoveAllEffects", "replaceRemoveAllEffects", "(Ljava/lang/Object;)Z")
+                .callsite("removeAllEffects", "(Ljava/lang/Object;Z)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_7832_", "shouldDropLoot", "()Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockShouldDropLoot", "replaceShouldDropLoot", "(Ljava/lang/Object;)Z")
+                .callsite("shouldDropLoot", "(Ljava/lang/Object;Z)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_6085_", "shouldDropExperience", "()Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockShouldDropExperience", "replaceShouldDropExperience", "(Ljava/lang/Object;)Z")
+                .callsite("shouldDropExperience", "(Ljava/lang/Object;Z)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_6075_", "baseTick", "()V", ReturnType.VOID)
+                .headNoCancel("onBaseTick", "(Ljava/lang/Object;)V", 0)
+                .build());
+
+        add(new MethodMapping.Builder("m_8119_", "tick", "()V", ReturnType.VOID)
+                .headVoid("shouldBlockLivingTick")
+                .build());
+
+        add(new MethodMapping.Builder("m_20124_", "setPose", "(Lnet/minecraft/world/entity/Pose;)V", ReturnType.VOID)
+                .headVoid("shouldBlockSetPose", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_142687_", "setRemoved", "(Lnet/minecraft/world/entity/Entity$RemovalReason;)V", ReturnType.VOID)
+                .headVoid("shouldBlockSetRemoved")
+                .build());
+
+        add(new MethodMapping.Builder("m_6074_", "kill", "()V", ReturnType.VOID)
+                .headVoid("shouldBlockKill")
+                .build());
+
+        add(new MethodMapping.Builder("m_142036_", "discard", "()V", ReturnType.VOID)
+                .headVoid("shouldBlockDiscard")
+                .build());
+
+        add(new MethodMapping.Builder("m_142467_", "remove", "(Lnet/minecraft/world/entity/Entity$RemovalReason;)V", ReturnType.VOID)
+                .headVoid("shouldBlockRemove")
+                .build());
+
+        add(new MethodMapping.Builder("m_6091_", "move", "(Lnet/minecraft/world/entity/MoverType;Lnet/minecraft/world/phys/Vec3;)V", ReturnType.VOID)
+                .headVoid("shouldBlockMove")
+                .build());
+
+        add(new MethodMapping.Builder("m_20344_", "setPosRaw", "(DDD)V", ReturnType.VOID)
+                .headVoid("shouldBlockSetPosRaw")
+                .build());
+
+        add(new MethodMapping.Builder("m_20257_", "setDeltaMovement", "(Lnet/minecraft/world/phys/Vec3;)V", ReturnType.VOID)
+                .headVoid("shouldBlockSetDeltaMovement", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_5765_", "push", "(DDD)V", ReturnType.VOID)
+                .headVoid("shouldBlockPush")
+                .build());
+
+        add(new MethodMapping.Builder("m_6667_", "die", "(Lnet/minecraft/world/damagesource/DamageSource;)V", ReturnType.VOID)
+                .headVoid("shouldBlockDie")
+                .build());
+
+        add(new MethodMapping.Builder("m_21154_", "setHealth", "(F)V", ReturnType.VOID)
+                .headVoid("shouldBlockSetHealth")
+                .build());
+
+        add(new MethodMapping.Builder("m_21230_", "tickDeath", "()V", ReturnType.VOID)
+                .headVoid("shouldBlockTickDeath")
+                .build());
+
+        add(new MethodMapping.Builder("m_6550_", "actuallyHurt", "(Lnet/minecraft/world/damagesource/DamageSource;F)V", ReturnType.VOID)
+                .headVoid("shouldBlockActuallyHurt")
+                .build());
+
+        add(new MethodMapping.Builder("m_6660_", "knockback", "(DDD)V", ReturnType.VOID)
+                .headVoid("shouldBlockKnockback")
+                .build());
+
+        add(new MethodMapping.Builder("m_20259_", "setNoGravity", "(Z)V", ReturnType.VOID)
+                .headVoid("shouldBlockSetNoGravity")
+                .build());
+
+        add(new MethodMapping.Builder("m_7967_", "addFreshEntity", "(Lnet/minecraft/world/entity/Entity;)Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockAddFreshEntity", "(Ljava/lang/Object;Ljava/lang/Object;)Z",
+                        "replaceHurt", "(Ljava/lang/Object;)Z")
+                .build());
+    }
+
+    private static void add(MethodMapping mapping) {
+        METHOD_MAPPINGS.add(mapping);
+        TARGET_SIGS.add(mapping.srgName + mapping.descriptor);
+        TARGET_SIGS.add(mapping.mcpName + mapping.descriptor);
+        TARGET_METHOD_NAMES.add(mapping.srgName);
+        TARGET_METHOD_NAMES.add(mapping.mcpName);
+    }
 
     public LALTransformer() {
         super();
     }
 
     public static void initialize() {
-        if (initialized) {
-            return;
-        }
-        try {
-            LALPlugin plugin = new LALPlugin();
-            Field field = Launcher.class.getDeclaredField("launchPlugins");
-            field.setAccessible(true);
-            LaunchPluginHandler pluginHandler = (LaunchPluginHandler)field.get(Launcher.INSTANCE);
-            field = LaunchPluginHandler.class.getDeclaredField("plugins");
-            field.setAccessible(true);
-            Map map = (Map)field.get(pluginHandler);
-            map.put(plugin.name(), plugin);
-        }
-        catch (Exception e) {
-        }
+        if (initialized) return;
         initialized = true;
     }
 
     public static boolean transform(ClassNode classNode) {
-        return LALTransformer.transform(classNode, null);
+        return transform(classNode, null);
     }
 
     public static boolean transform(ClassNode classNode, ILaunchPluginService.Phase phase) {
-        if (classNode.name.startsWith("jp/mikumiku/lal/transformer")) {
-            return false;
-        }
-        if (!LALTransformer.hasTargetMethodReference(classNode)) {
+        if (classNode.name.startsWith("jp/mikumiku/lal/transformer")) return false;
+        if (!hasTargetMethodReference(classNode)) {
             skippedClasses.incrementAndGet();
             return false;
         }
+
         boolean doHead = phase == null || phase == ILaunchPluginService.Phase.BEFORE;
         boolean doReturn = phase == null || phase == ILaunchPluginService.Phase.AFTER;
         boolean modified = false;
+
         for (MethodNode method : classNode.methods) {
             boolean methodModified = false;
+
             if (doReturn) {
-                for (AbstractInsnNode insn : method.instructions) {
-                    InsnList il;
-                    if (insn instanceof MethodInsnNode) {
-                        MethodInsnNode mi = (MethodInsnNode)insn;
-                        int opcode = insn.getOpcode();
-                        if (opcode == 182 || opcode == 185) {
-                            if (!TARGET_SIGS.contains(mi.name + mi.desc)) continue;
-                            if (LALTransformer.isGetHealth(mi)) {
-                                method.instructions.insertBefore((AbstractInsnNode)mi, (AbstractInsnNode)new InsnNode(89));
-                                method.instructions.insert((AbstractInsnNode)mi, (AbstractInsnNode)new MethodInsnNode(184, HOOKS, "getHealth", "(Ljava/lang/Object;F)F"));
-                                methodModified = true;
-                            } else if (LALTransformer.isIsDeadOrDying(mi)) {
-                                method.instructions.insertBefore((AbstractInsnNode)mi, (AbstractInsnNode)new InsnNode(89));
-                                method.instructions.insert((AbstractInsnNode)mi, (AbstractInsnNode)new MethodInsnNode(184, HOOKS, "isDeadOrDying", "(Ljava/lang/Object;Z)Z"));
-                                methodModified = true;
-                            } else if (LALTransformer.isIsAlive(mi)) {
-                                method.instructions.insertBefore((AbstractInsnNode)mi, (AbstractInsnNode)new InsnNode(89));
-                                method.instructions.insert((AbstractInsnNode)mi, (AbstractInsnNode)new MethodInsnNode(184, HOOKS, "isAlive", "(Ljava/lang/Object;Z)Z"));
-                                methodModified = true;
-                            } else if (LALTransformer.isIsRemoved(mi)) {
-                                method.instructions.insertBefore((AbstractInsnNode)mi, (AbstractInsnNode)new InsnNode(89));
-                                method.instructions.insert((AbstractInsnNode)mi, (AbstractInsnNode)new MethodInsnNode(184, HOOKS, "isRemoved", "(Ljava/lang/Object;Z)Z"));
-                                methodModified = true;
-                            } else if (LALTransformer.isGetRemovalReason(mi)) {
-                                method.instructions.insertBefore((AbstractInsnNode)mi, (AbstractInsnNode)new InsnNode(89));
-                                method.instructions.insert((AbstractInsnNode)mi, (AbstractInsnNode)new MethodInsnNode(184, HOOKS, "getRemovalReason", "(Ljava/lang/Object;Lnet/minecraft/world/entity/Entity$RemovalReason;)Lnet/minecraft/world/entity/Entity$RemovalReason;"));
-                                methodModified = true;
-                            }
-                        }
-                    }
-                    if (insn.getOpcode() == 174) {
-                        if (!LALTransformer.isMethodDef(method, "m_21223_", "getHealth", "()F")) continue;
-                        il = new InsnList();
-                        il.add((AbstractInsnNode)new VarInsnNode(25, 0));
-                        il.add((AbstractInsnNode)new MethodInsnNode(184, HOOKS, "getHealth", "(FLjava/lang/Object;)F"));
-                        method.instructions.insertBefore(insn, il);
-                        methodModified = true;
-                        continue;
-                    }
-                    if (insn.getOpcode() == 172) {
-                        if (LALTransformer.isMethodDef(method, "m_21224_", "isDeadOrDying", "()Z")) {
-                            il = new InsnList();
-                            il.add((AbstractInsnNode)new VarInsnNode(25, 0));
-                            il.add((AbstractInsnNode)new MethodInsnNode(184, HOOKS, "isDeadOrDying", "(ZLjava/lang/Object;)Z"));
-                            method.instructions.insertBefore(insn, il);
-                            methodModified = true;
-                            continue;
-                        }
-                        if (LALTransformer.isMethodDef(method, "m_6084_", "isAlive", "()Z")) {
-                            il = new InsnList();
-                            il.add((AbstractInsnNode)new VarInsnNode(25, 0));
-                            il.add((AbstractInsnNode)new MethodInsnNode(184, HOOKS, "isAlive", "(ZLjava/lang/Object;)Z"));
-                            method.instructions.insertBefore(insn, il);
-                            methodModified = true;
-                            continue;
-                        }
-                        if (!LALTransformer.isMethodDef(method, "m_240725_", "isRemoved", "()Z") && !LALTransformer.isMethodDef(method, "m_213877_", "isRemoved", "()Z")) continue;
-                        il = new InsnList();
-                        il.add((AbstractInsnNode)new VarInsnNode(25, 0));
-                        il.add((AbstractInsnNode)new MethodInsnNode(184, HOOKS, "isRemoved", "(ZLjava/lang/Object;)Z"));
-                        method.instructions.insertBefore(insn, il);
-                        methodModified = true;
-                        continue;
-                    }
-                    if (insn.getOpcode() != 176 || !LALTransformer.isMethodDef(method, "m_146911_", "getRemovalReason", "()Lnet/minecraft/world/entity/Entity$RemovalReason;")) continue;
-                    il = new InsnList();
-                    il.add((AbstractInsnNode)new VarInsnNode(25, 0));
-                    il.add((AbstractInsnNode)new MethodInsnNode(184, HOOKS, "getRemovalReason", "(Lnet/minecraft/world/entity/Entity$RemovalReason;Ljava/lang/Object;)Lnet/minecraft/world/entity/Entity$RemovalReason;"));
-                    method.instructions.insertBefore(insn, il);
-                    methodModified = true;
-                }
+                methodModified |= processCallsites(method);
+                methodModified |= processReturnHooks(method);
             }
+
             if (doHead) {
-                if (LALTransformer.isMethodDef(method, "m_21223_", "getHealth", "()F")) {
-                    LALTransformer.injectHead(method, new MethodInsnNode(184, HOOKS, "shouldReplaceMethod", "(Ljava/lang/Object;)Z", false), new MethodInsnNode(184, HOOKS, "replaceGetHealth", "(Ljava/lang/Object;)F", false), new InsnNode(174));
-                    methodModified = true;
-                } else if (LALTransformer.isMethodDef(method, "m_21224_", "isDeadOrDying", "()Z")) {
-                    LALTransformer.injectHead(method, new MethodInsnNode(184, HOOKS, "shouldReplaceMethod", "(Ljava/lang/Object;)Z", false), new MethodInsnNode(184, HOOKS, "replaceIsDeadOrDying", "(Ljava/lang/Object;)Z", false), new InsnNode(172));
-                    methodModified = true;
-                } else if (LALTransformer.isMethodDef(method, "m_6084_", "isAlive", "()Z")) {
-                    LALTransformer.injectHead(method, new MethodInsnNode(184, HOOKS, "shouldReplaceMethod", "(Ljava/lang/Object;)Z", false), new MethodInsnNode(184, HOOKS, "replaceIsAlive", "(Ljava/lang/Object;)Z", false), new InsnNode(172));
-                    methodModified = true;
-                }
+                methodModified |= processHeadInjection(method);
             }
-            if (!methodModified) continue;
-            method.maxStack += 2;
-            transformedMethods.incrementAndGet();
-            modified = true;
+
+            if (methodModified) {
+                method.maxStack += 4;
+                transformedMethods.incrementAndGet();
+                modified = true;
+            }
         }
+
         if (modified) {
             transformedClasses.incrementAndGet();
             try {
                 LALAgent.markProtected(classNode.name);
-            }
-            catch (NoClassDefFoundError noClassDefFoundError) {
-            }
+            } catch (NoClassDefFoundError ignored) {}
         }
         return modified;
     }
 
+    private static boolean processCallsites(MethodNode method) {
+        if (method.instructions.size() == 0) return false;
+        boolean modified = false;
+        ArrayList<MethodInsnNode> targets = new ArrayList<>();
+        for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            if (!(insn instanceof MethodInsnNode)) continue;
+            MethodInsnNode mi = (MethodInsnNode) insn;
+            int opcode = mi.getOpcode();
+            if (opcode != Opcodes.INVOKEVIRTUAL && opcode != Opcodes.INVOKEINTERFACE) continue;
+            String sig = mi.name + mi.desc;
+            if (!TARGET_SIGS.contains(sig)) continue;
+            MethodMapping mapping = findMappingForCallsite(mi.name, mi.desc);
+            if (mapping == null || !mapping.hookTypes.contains(HookType.CALLSITE)) continue;
+            if (mapping.callsiteHookMethod == null) continue;
+            targets.add(mi);
+        }
+        for (MethodInsnNode mi : targets) {
+            MethodMapping mapping = findMappingForCallsite(mi.name, mi.desc);
+            if (mapping == null) continue;
+            method.instructions.insertBefore(mi, new InsnNode(Opcodes.DUP));
+            method.instructions.insert(mi, new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                    mapping.callsiteHookMethod, mapping.callsiteHookDesc, false));
+            modified = true;
+        }
+        return modified;
+    }
+
+    private static boolean processReturnHooks(MethodNode method) {
+        if (method.instructions.size() == 0) return false;
+        boolean modified = false;
+        MethodMapping mapping = findMappingForMethodDef(method);
+        if (mapping == null) return false;
+        if (!mapping.hookTypes.contains(HookType.CALLSITE) && !mapping.hookTypes.contains(HookType.HEAD_RETURN)) return false;
+
+        int targetOpcode = mapping.returnType.returnOpcode;
+        if (targetOpcode == Opcodes.RETURN) return false;
+
+        String returnWrapperMethod = mapping.callsiteHookMethod;
+        if (returnWrapperMethod == null) return false;
+
+        String returnWrapperDesc = buildReturnWrapperDesc(mapping);
+        if (returnWrapperDesc == null) return false;
+
+        ArrayList<AbstractInsnNode> returnInsns = new ArrayList<>();
+        for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            if (insn.getOpcode() == targetOpcode) {
+                returnInsns.add(insn);
+            }
+        }
+        for (AbstractInsnNode insn : returnInsns) {
+            InsnList patch = new InsnList();
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                    returnWrapperMethod, returnWrapperDesc, false));
+            method.instructions.insertBefore(insn, patch);
+            modified = true;
+        }
+        return modified;
+    }
+
+    private static String buildReturnWrapperDesc(MethodMapping mapping) {
+        switch (mapping.returnType) {
+            case FLOAT:   return "(FLjava/lang/Object;)F";
+            case BOOLEAN: return "(ZLjava/lang/Object;)Z";
+            case DOUBLE:  return "(DLjava/lang/Object;)D";
+            case OBJECT: {
+                String desc = mapping.descriptor;
+                String retType = desc.substring(desc.lastIndexOf(')') + 1);
+                return "(" + retType + "Ljava/lang/Object;)" + retType;
+            }
+            default: return null;
+        }
+    }
+
+    private static boolean processHeadInjection(MethodNode method) {
+        MethodMapping mapping = findMappingForMethodDef(method);
+        if (mapping == null) return false;
+
+        if (mapping.hookTypes.contains(HookType.HEAD_RETURN)) {
+            return injectHeadReturn(method, mapping);
+        } else if (mapping.hookTypes.contains(HookType.HEAD_VOID)) {
+            return injectHeadVoid(method, mapping);
+        } else if (mapping.hookTypes.contains(HookType.HEAD_NOCANCEL)) {
+            return injectHeadNoCancel(method, mapping);
+        }
+        return false;
+    }
+
+    private static boolean injectHeadReturn(MethodNode method, MethodMapping mapping) {
+        if (mapping.headJudgeMethod == null || mapping.headReplaceMethod == null) return false;
+        if (method.instructions.size() == 0 || method.instructions.getFirst() == null) return false;
+
+        LabelNode skipLabel = new LabelNode(new Label());
+        InsnList patch = new InsnList();
+
+        if (mapping.headJudgeDesc != null && mapping.headJudgeDesc.contains("Ljava/lang/Object;Ljava/lang/Object;")) {
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                    mapping.headJudgeMethod, mapping.headJudgeDesc, false));
+        } else {
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                    mapping.headJudgeMethod, mapping.headJudgeDesc != null ? mapping.headJudgeDesc : "(Ljava/lang/Object;)Z", false));
+        }
+
+        patch.add(new JumpInsnNode(Opcodes.IFEQ, skipLabel));
+        patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                mapping.headReplaceMethod, mapping.headReplaceDesc, false));
+        patch.add(new InsnNode(mapping.returnType.returnOpcode));
+        patch.add(skipLabel);
+
+        method.instructions.insertBefore(method.instructions.getFirst(), patch);
+        return true;
+    }
+
+    private static boolean injectHeadVoid(MethodNode method, MethodMapping mapping) {
+        if (mapping.headJudgeMethod == null) return false;
+        if (method.instructions.size() == 0 || method.instructions.getFirst() == null) return false;
+
+        LabelNode skipLabel = new LabelNode(new Label());
+        InsnList patch = new InsnList();
+
+        if (mapping.headJudgeDesc != null && mapping.headJudgeDesc.equals("(Ljava/lang/Object;Ljava/lang/Object;)Z")) {
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                    mapping.headJudgeMethod, mapping.headJudgeDesc, false));
+        } else {
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                    mapping.headJudgeMethod, mapping.headJudgeDesc != null ? mapping.headJudgeDesc : "(Ljava/lang/Object;)Z", false));
+        }
+
+        patch.add(new JumpInsnNode(Opcodes.IFEQ, skipLabel));
+        patch.add(new InsnNode(Opcodes.RETURN));
+        patch.add(skipLabel);
+
+        method.instructions.insertBefore(method.instructions.getFirst(), patch);
+        return true;
+    }
+
+    private static boolean injectHeadNoCancel(MethodNode method, MethodMapping mapping) {
+        if (mapping.headNoCancelMethod == null) return false;
+        if (method.instructions.size() == 0 || method.instructions.getFirst() == null) return false;
+
+        InsnList patch = new InsnList();
+        patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+
+        if (mapping.headNoCancelArgSlots > 0) {
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        }
+
+        patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                mapping.headNoCancelMethod, mapping.headNoCancelDesc, false));
+
+        method.instructions.insertBefore(method.instructions.getFirst(), patch);
+        return true;
+    }
+
+    private static MethodMapping findMappingForMethodDef(MethodNode method) {
+        if ((method.access & Opcodes.ACC_STATIC) != 0) return null;
+        if ((method.access & Opcodes.ACC_ABSTRACT) != 0) return null;
+        if ((method.access & Opcodes.ACC_NATIVE) != 0) return null;
+        for (MethodMapping mapping : METHOD_MAPPINGS) {
+            if (mapping.descriptor.equals(method.desc)
+                    && (mapping.srgName.equals(method.name) || mapping.mcpName.equals(method.name))) {
+                return mapping;
+            }
+        }
+        return null;
+    }
+
+    private static MethodMapping findMappingForCallsite(String name, String desc) {
+        for (MethodMapping mapping : METHOD_MAPPINGS) {
+            if (mapping.descriptor.equals(desc)
+                    && (mapping.srgName.equals(name) || mapping.mcpName.equals(name))) {
+                return mapping;
+            }
+        }
+        return null;
+    }
+
     private static boolean hasTargetMethodReference(ClassNode classNode) {
         for (MethodNode method : classNode.methods) {
-            if (TARGET_SIGS.contains(method.name + method.desc)) {
+            if (TARGET_METHOD_NAMES.contains(method.name) && TARGET_SIGS.contains(method.name + method.desc)) {
                 return true;
             }
             for (AbstractInsnNode insn : method.instructions) {
                 if (!(insn instanceof MethodInsnNode)) continue;
-                MethodInsnNode mi = (MethodInsnNode)insn;
-                if (!TARGET_SIGS.contains(mi.name + mi.desc)) continue;
-                return true;
+                MethodInsnNode mi = (MethodInsnNode) insn;
+                if (!TARGET_METHOD_NAMES.contains(mi.name)) continue;
+                if (TARGET_SIGS.contains(mi.name + mi.desc)) return true;
             }
         }
         return false;
     }
 
-    private static boolean isGetHealth(MethodInsnNode mi) {
-        return ("m_21223_".equals(mi.name) || "getHealth".equals(mi.name)) && "()F".equals(mi.desc);
-    }
-
-    private static boolean isIsDeadOrDying(MethodInsnNode mi) {
-        return ("m_21224_".equals(mi.name) || "isDeadOrDying".equals(mi.name)) && "()Z".equals(mi.desc);
-    }
-
-    private static boolean isIsAlive(MethodInsnNode mi) {
-        return ("m_6084_".equals(mi.name) || "isAlive".equals(mi.name)) && "()Z".equals(mi.desc);
-    }
-
-    private static boolean isIsRemoved(MethodInsnNode mi) {
-        return ("m_240725_".equals(mi.name) || "m_213877_".equals(mi.name) || "isRemoved".equals(mi.name)) && "()Z".equals(mi.desc);
-    }
-
-    private static boolean isGetRemovalReason(MethodInsnNode mi) {
-        return ("m_146911_".equals(mi.name) || "getRemovalReason".equals(mi.name)) && "()Lnet/minecraft/world/entity/Entity$RemovalReason;".equals(mi.desc);
-    }
-
-    private static boolean isMethodDef(MethodNode method, String obfName, String name, String desc) {
-        if ((method.access & 8) != 0) {
-            return false;
-        }
-        return (obfName.equals(method.name) || name.equals(method.name)) && desc.equals(method.desc);
-    }
+    public static int getTransformedClassCount() { return transformedClasses.get(); }
+    public static int getTransformedMethodCount() { return transformedMethods.get(); }
+    public static int getSkippedClassCount() { return skippedClasses.get(); }
 
     public static void injectHead(MethodNode method, MethodInsnNode judgeMethod, MethodInsnNode replaceMethod, InsnNode returnInsn) {
         LabelNode skipLabel = new LabelNode(new Label());
         InsnList insnList = new InsnList();
-        insnList.add((AbstractInsnNode)new VarInsnNode(25, 0));
-        insnList.add((AbstractInsnNode)judgeMethod);
-        insnList.add((AbstractInsnNode)new JumpInsnNode(158, skipLabel));
-        insnList.add((AbstractInsnNode)new VarInsnNode(25, 0));
-        insnList.add((AbstractInsnNode)replaceMethod);
-        insnList.add((AbstractInsnNode)returnInsn);
-        insnList.add((AbstractInsnNode)skipLabel);
+        insnList.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        insnList.add(judgeMethod);
+        insnList.add(new JumpInsnNode(Opcodes.IFEQ, skipLabel));
+        insnList.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        insnList.add(replaceMethod);
+        insnList.add(returnInsn);
+        insnList.add(skipLabel);
         method.instructions.insertBefore(method.instructions.getFirst(), insnList);
     }
-
-    public static int getTransformedClassCount() {
-        return transformedClasses.get();
-    }
-
-    public static int getTransformedMethodCount() {
-        return transformedMethods.get();
-    }
-
-    public static int getSkippedClassCount() {
-        return skippedClasses.get();
-    }
 }
-

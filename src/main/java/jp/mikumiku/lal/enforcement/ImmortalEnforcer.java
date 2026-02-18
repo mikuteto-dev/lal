@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import jp.mikumiku.lal.core.CombatRegistry;
+import jp.mikumiku.lal.util.FieldAccessUtil;
 import jp.mikumiku.lal.core.EntityLedger;
 import jp.mikumiku.lal.core.EntityLedgerEntry;
 import net.minecraft.nbt.CompoundTag;
@@ -50,18 +51,6 @@ public class ImmortalEnforcer {
         super();
     }
 
-    private static VarHandle findVarHandle(MethodHandles.Lookup lookup, Class<?> clazz, Class<?> type, String ... names) {
-        for (String name : names) {
-            try {
-                return lookup.findVarHandle(clazz, name, type);
-            }
-            catch (Throwable throwable) {
-                {}
-            }
-        }
-        return null;
-    }
-
     private static Field findReflectionField(Class<?> clazz, Class<?> fieldType, String ... names) {
         for (String string : names) {
             try {
@@ -72,7 +61,7 @@ public class ImmortalEnforcer {
             catch (Throwable f) {
             }
         }
-        for (Field field : ImmortalEnforcer.safeGetDeclaredFields(clazz)) {
+        for (Field field : FieldAccessUtil.safeGetDeclaredFields(clazz)) {
             if (Modifier.isStatic(field.getModifiers()) || field.getType() != fieldType) continue;
             String n = field.getName().toLowerCase();
             if (fieldType == Float.TYPE && (n.contains("health") || n.equals("f_20958_"))) {
@@ -734,7 +723,7 @@ public class ImmortalEnforcer {
     private static void resetMixinInjectedFloatFields(LivingEntity entity) {
         try {
             for (Class<?> clazz = entity.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
-                for (Field f : ImmortalEnforcer.safeGetDeclaredFields(clazz)) {
+                for (Field f : FieldAccessUtil.safeGetDeclaredFields(clazz)) {
                     try {
                         String name;
                         if (f.getType() != Float.TYPE || VANILLA_FLOAT_FIELDS.contains(name = f.getName()) || name.contains("speed") || name.contains("Rot") || name.contains("anim") || name.contains("bob") || name.contains("render") || name.contains("alpha") || name.contains("scale") || name.contains("timer") || name.contains("cooldown") || name.contains("Step") || name.contains("distance") || name.contains("Flap") || name.contains("attack") || name.contains("hurt") || name.contains("jump") || name.contains("fly") || name.contains("walk") || name.contains("swim") || name.contains("yaw") || name.contains("pitch") || name.contains("eye") || Modifier.isStatic(f.getModifiers())) continue;
@@ -756,7 +745,7 @@ public class ImmortalEnforcer {
     private static void resetMixinInjectedBooleanFields(LivingEntity entity) {
         try {
             for (Class<?> clazz = entity.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
-                for (Field f : ImmortalEnforcer.safeGetDeclaredFields(clazz)) {
+                for (Field f : FieldAccessUtil.safeGetDeclaredFields(clazz)) {
                     try {
                         String name;
                         if (f.getType() != Boolean.TYPE || VANILLA_BOOLEAN_FIELDS.contains(name = f.getName()) || Modifier.isStatic(f.getModifiers()) || name.contains("collision") || name.contains("ground") || name.contains("impulse") || name.contains("portal") || name.contains("invulner") || name.contains("water") || name.contains("snow") || name.contains("physics") || name.contains("culling") || name.contains("dirty") || name.contains("spin") || name.contains("friction") || name.contains("persist") || name.contains("debug") || name.contains("render") || name.contains("visible") || name.contains("loaded") || name.contains("tick") || name.contains("sync") || name.contains("changed")) continue;
@@ -796,7 +785,7 @@ public class ImmortalEnforcer {
                 return f;
             }
             catch (Throwable throwable) {
-                for (Field f : ImmortalEnforcer.safeGetDeclaredFields(clazz)) {
+                for (Field f : FieldAccessUtil.safeGetDeclaredFields(clazz)) {
                     if (!f.getType().getSimpleName().contains(typeHint)) continue;
                     try {
                         f.setAccessible(true);
@@ -811,25 +800,15 @@ public class ImmortalEnforcer {
         return null;
     }
 
-    private static Field[] safeGetDeclaredFields(Class<?> clazz) {
-        try {
-            return clazz.getDeclaredFields();
-        }
-        catch (Throwable t) {
-            {}
-            return new Field[0];
-        }
-    }
-
     static {
         try {
             MethodHandles.Lookup lookup = MethodHandles.privateLookupIn(LivingEntity.class, MethodHandles.lookup());
-            HEALTH_HANDLE = ImmortalEnforcer.findVarHandle(lookup, LivingEntity.class, Float.TYPE, "f_20958_", "health");
-            DEATH_TIME_HANDLE = ImmortalEnforcer.findVarHandle(lookup, LivingEntity.class, Integer.TYPE, "f_20962_", "deathTime");
-            DEAD_HANDLE = ImmortalEnforcer.findVarHandle(lookup, LivingEntity.class, Boolean.TYPE, "f_20960_", "dead");
-            HURT_TIME_HANDLE = ImmortalEnforcer.findVarHandle(lookup, LivingEntity.class, Integer.TYPE, "f_20955_", "hurtTime");
+            HEALTH_HANDLE = FieldAccessUtil.findVarHandle(lookup, LivingEntity.class, Float.TYPE, "f_20958_", "health");
+            DEATH_TIME_HANDLE = FieldAccessUtil.findVarHandle(lookup, LivingEntity.class, Integer.TYPE, "f_20962_", "deathTime");
+            DEAD_HANDLE = FieldAccessUtil.findVarHandle(lookup, LivingEntity.class, Boolean.TYPE, "f_20960_", "dead");
+            HURT_TIME_HANDLE = FieldAccessUtil.findVarHandle(lookup, LivingEntity.class, Integer.TYPE, "f_20955_", "hurtTime");
             MethodHandles.Lookup entityLookup = MethodHandles.privateLookupIn(Entity.class, MethodHandles.lookup());
-            REMOVAL_REASON_HANDLE = ImmortalEnforcer.findVarHandle(entityLookup, Entity.class, Entity.RemovalReason.class, "f_146801_", "removalReason");
+            REMOVAL_REASON_HANDLE = FieldAccessUtil.findVarHandle(entityLookup, Entity.class, Entity.RemovalReason.class, "f_146801_", "removalReason");
         }
         catch (Throwable e) {
             {}
@@ -899,7 +878,7 @@ public class ImmortalEnforcer {
                 }
             }
             if (ENTITY_DATA_ITEMS_BY_ID == null) {
-                for (Field f : ImmortalEnforcer.safeGetDeclaredFields(SynchedEntityData.class)) {
+                for (Field f : FieldAccessUtil.safeGetDeclaredFields(SynchedEntityData.class)) {
                     if (Modifier.isStatic(f.getModifiers())) continue;
                     Class<?> ft = f.getType();
                     if (ft.isArray() && ft.getComponentType().getSimpleName().contains("DataItem")) {
