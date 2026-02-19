@@ -2,7 +2,9 @@ package jp.mikumiku.lal.enforcement;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -39,6 +41,11 @@ public class RegistryCleaner {
                 id = target.getId();
                 try {
                     target.setRemoved(Entity.RemovalReason.KILLED);
+                }
+                catch (Throwable throwable) {
+                    }
+                try {
+                    RegistryCleaner.destroyAllCallbacks(target);
                 }
                 catch (Throwable throwable) {
                     }
@@ -177,6 +184,11 @@ public class RegistryCleaner {
             }
         }
         try {
+            RegistryCleaner.purgeFromAllLevelStructures(target, level);
+        }
+        catch (Throwable throwable) {
+        }
+        try {
             target.updateDynamicGameEventListener(DynamicGameEventListener::remove);
         }
         catch (Throwable parts) {
@@ -223,42 +235,7 @@ public class RegistryCleaner {
 
     private static void removeFromSectionByClass(Object section, Entity target) {
         try {
-            Object storage = RegistryCleaner.findField(section, "storage", "ClassInstanceMultiMap");
-            if (storage != null) {
-                Object allInstances;
-                Object byClass = RegistryCleaner.findField(storage, "byClass", "Map");
-                if (byClass instanceof Map) {
-                    Map<?, ?> map = (Map<?, ?>)byClass;
-                    for (Map.Entry<?, ?> entry : map.entrySet()) {
-                        Object list;
-                        Class clazz;
-                        Map.Entry mapEntry = entry;
-                        Object k = mapEntry.getKey();
-                        if (!(k instanceof Class) || !(clazz = (Class)k).isInstance(target) || !((list = mapEntry.getValue()) instanceof List)) continue;
-                        List l = (List)list;
-                        l.remove(target);
-                    }
-                }
-                if ((allInstances = RegistryCleaner.findField(storage, "allInstances", "List")) instanceof List) {
-                    List l = (List)allInstances;
-                    l.remove(target);
-                }
-                try {
-                    for (Field sf : FieldAccessUtil.safeGetDeclaredFields(storage.getClass())) {
-                        try {
-                            sf.setAccessible(true);
-                            Object sfv = sf.get(storage);
-                            if (!(sfv instanceof List)) continue;
-                            List list = (List)sfv;
-                            list.remove(target);
-                        }
-                        catch (Throwable throwable) {
-                                    }
-                    }
-                }
-                catch (Throwable throwable) {
-                    }
-            }
+            RegistryCleaner.removeFromAllStoragesInSection(section, target);
             try {
                 Method removeMethod = section.getClass().getMethod("remove", Entity.class);
                 removeMethod.invoke(section, target);
@@ -273,6 +250,57 @@ public class RegistryCleaner {
         }
         catch (Throwable throwable) {
         }
+    }
+
+    private static void removeFromAllStoragesInSection(Object section, Entity target) {
+        if (section == null) return;
+        for (Class<?> clazz = section.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
+            for (Field f : FieldAccessUtil.safeGetDeclaredFields(clazz)) {
+                try {
+                    f.setAccessible(true);
+                    Object val = f.get(section);
+                    if (val == null) continue;
+                    String typeName = val.getClass().getSimpleName();
+                    if (typeName.contains("ClassInstanceMultiMap")) {
+                        RegistryCleaner.removeFromClassInstanceMultiMap(val, target);
+                    } else if (val instanceof List) {
+                        try { ((List)val).remove(target); } catch (Throwable t) {}
+                    } else if (val instanceof Set) {
+                        try { ((Set)val).remove(target); } catch (Throwable t) {}
+                    }
+                } catch (Throwable throwable) {}
+            }
+        }
+    }
+
+    private static void removeFromClassInstanceMultiMap(Object storage, Entity target) {
+        try {
+            Object byClass = RegistryCleaner.findField(storage, "byClass", "Map");
+            if (byClass instanceof Map) {
+                Map<?, ?> map = (Map<?, ?>)byClass;
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    Object k = entry.getKey();
+                    if (!(k instanceof Class) || !((Class)k).isInstance(target)) continue;
+                    Object list = entry.getValue();
+                    if (list instanceof List) {
+                        ((List)list).remove(target);
+                    }
+                }
+            }
+            Object allInstances = RegistryCleaner.findField(storage, "allInstances", "List");
+            if (allInstances instanceof List) {
+                ((List)allInstances).remove(target);
+            }
+            for (Field sf : FieldAccessUtil.safeGetDeclaredFields(storage.getClass())) {
+                try {
+                    sf.setAccessible(true);
+                    Object sfv = sf.get(storage);
+                    if (sfv instanceof List) {
+                        ((List)sfv).remove(target);
+                    }
+                } catch (Throwable throwable) {}
+            }
+        } catch (Throwable throwable) {}
     }
 
     private static Object findField(Object obj, String preferredName, String typeHint) {
@@ -379,6 +407,72 @@ public class RegistryCleaner {
                 }
                 catch (Throwable throwable) {
                     }
+            }
+        }
+    }
+
+    private static void purgeFromAllLevelStructures(Entity target, ServerLevel level) {
+        if (level == null || target == null) return;
+        UUID uuid = target.getUUID();
+        int id = target.getId();
+        for (Class<?> clazz = level.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
+            for (Field f : FieldAccessUtil.safeGetDeclaredFields(clazz)) {
+                try {
+                    f.setAccessible(true);
+                    Object val = f.get(level);
+                    if (val == null) continue;
+                    if (val instanceof Collection) {
+                        Collection col = (Collection) val;
+                        try { col.remove(target); } catch (Throwable t) {}
+                        try { col.remove(uuid); } catch (Throwable t) {}
+                    } else if (val instanceof Map) {
+                        Map map = (Map) val;
+                        try { map.remove(target); } catch (Throwable t) {}
+                        try { map.remove(uuid); } catch (Throwable t) {}
+                        try { map.remove(id); } catch (Throwable t) {}
+                        try {
+                            map.values().remove(target);
+                        } catch (Throwable t) {}
+                    } else {
+                        String className = val.getClass().getName();
+                        if (className.contains("Int2Object")) {
+                            try {
+                                val.getClass().getMethod("remove", Integer.TYPE).invoke(val, id);
+                            } catch (Throwable t) {}
+                        }
+                    }
+                } catch (Throwable throwable) {}
+            }
+        }
+    }
+
+    private static void destroyAllCallbacks(Entity target) {
+        if (target == null) return;
+        for (Class<?> clazz = target.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
+            for (Field f : FieldAccessUtil.safeGetDeclaredFields(clazz)) {
+                try {
+                    if (Modifier.isStatic(f.getModifiers())) continue;
+                    f.setAccessible(true);
+                    Object val = f.get(target);
+                    if (val == null) continue;
+                    if (val instanceof EntityInLevelCallback) {
+                        try {
+                            ((EntityInLevelCallback) val).onRemove(Entity.RemovalReason.KILLED);
+                        } catch (Throwable t) {}
+                        try {
+                            f.set(target, EntityInLevelCallback.NULL);
+                        } catch (Throwable t) {}
+                    } else if (val.getClass().getSimpleName().contains("Callback")
+                            || val.getClass().getSimpleName().contains("LevelCallback")) {
+                        try {
+                            Method onRemove = val.getClass().getMethod("onRemove", Entity.RemovalReason.class);
+                            onRemove.invoke(val, Entity.RemovalReason.KILLED);
+                        } catch (Throwable t) {}
+                        try {
+                            f.set(target, null);
+                        } catch (Throwable t) {}
+                    }
+                } catch (Throwable throwable) {}
             }
         }
     }

@@ -9,9 +9,11 @@ import jp.mikumiku.lal.core.CombatRegistry;
 import jp.mikumiku.lal.core.EntityLedger;
 import jp.mikumiku.lal.core.EntityLedgerEntry;
 import jp.mikumiku.lal.core.KillSavedData;
+import jp.mikumiku.lal.enforcement.EnforcementDaemon;
 import jp.mikumiku.lal.enforcement.ImmortalEnforcer;
 import jp.mikumiku.lal.enforcement.KillEnforcer;
 import jp.mikumiku.lal.enforcement.RegistryCleaner;
+import jp.mikumiku.lal.transformer.EntityMethodHooks;
 import jp.mikumiku.lal.item.LALSwordItem;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -38,11 +40,17 @@ public abstract class ServerLevelMixin {
 
     @Inject(method={"tick"}, at={@At(value="HEAD")})
     private void lal$onTickStart(CallbackInfo ci) {
+        EntityMethodHooks.mixinTickRan = true;
         LivingEntity living;
         Entity entity;
         ServerLevel level = (ServerLevel)(Object)this;
         int repairsThisTick = 0;
         int maxRepairsPerTick = 20;
+        try {
+            EnforcementDaemon.ensureRunning();
+        }
+        catch (Exception exception) {
+        }
         try {
             KillEnforcer.restoreEventBusIfNeeded();
         }
@@ -177,6 +185,7 @@ public abstract class ServerLevelMixin {
         for (UUID uuid : new ArrayList<UUID>(CombatRegistry.getDeadConfirmedSet())) {
             entity = level.getEntity(uuid);
             if (entity == null) continue;
+            RegistryCleaner.deleteFromAllRegistries(entity, level);
             ServerLevelMixin.lal$forceRemoveEntity(entity);
             try {
                 entity.setBoundingBox(EMPTY_AABB);

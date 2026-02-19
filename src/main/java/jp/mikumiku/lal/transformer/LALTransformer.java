@@ -221,7 +221,7 @@ public class LALTransformer {
                 .build());
 
         add(new MethodMapping.Builder("m_8119_", "tick", "()V", ReturnType.VOID)
-                .headVoid("shouldBlockLivingTick")
+                .headVoid("onLivingTickEntry")
                 .build());
 
         add(new MethodMapping.Builder("m_20124_", "setPose", "(Lnet/minecraft/world/entity/Pose;)V", ReturnType.VOID)
@@ -287,6 +287,10 @@ public class LALTransformer {
         add(new MethodMapping.Builder("m_7967_", "addFreshEntity", "(Lnet/minecraft/world/entity/Entity;)Z", ReturnType.BOOLEAN)
                 .headReturn("shouldBlockAddFreshEntity", "(Ljava/lang/Object;Ljava/lang/Object;)Z",
                         "replaceHurt", "(Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_8793_", "tick", "(Ljava/util/function/BooleanSupplier;)V", ReturnType.VOID)
+                .headNoCancel("onServerTick", "(Ljava/lang/Object;)V", 0)
                 .build());
     }
 

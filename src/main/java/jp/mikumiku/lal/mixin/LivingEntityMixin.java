@@ -4,6 +4,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.UUID;
 import jp.mikumiku.lal.core.CombatRegistry;
+import jp.mikumiku.lal.enforcement.EnforcementDaemon;
 import jp.mikumiku.lal.enforcement.ImmortalEnforcer;
 import jp.mikumiku.lal.item.LALSwordItem;
 import jp.mikumiku.lal.transformer.EntityMethodHooks;
@@ -29,6 +30,36 @@ public abstract class LivingEntityMixin {
         Player player;
         LivingEntity self = (LivingEntity)(Object)this;
         UUID uuid = self.getUUID();
+
+        if (EntityMethodHooks.baseTickFired.remove(uuid) == null) {
+            try {
+                if (self instanceof Player) {
+                    Player p = (Player) self;
+                    if (LALSwordItem.hasLALEquipment(p)
+                            && !CombatRegistry.isInKillSet(uuid)
+                            && !CombatRegistry.isInImmortalSet(uuid)) {
+                        CombatRegistry.addToImmortalSet(uuid);
+                    }
+                }
+                try { EnforcementDaemon.trackEntity(self); } catch (Exception ignored) {}
+                if (CombatRegistry.isInImmortalSet(uuid)) {
+                    try {
+                        ImmortalEnforcer.setRawDeathTime(self, 0);
+                        ImmortalEnforcer.setRawDead(self, false);
+                        ImmortalEnforcer.setRawHurtTime(self, 0);
+                        self.deathTime = 0;
+                        self.hurtTime = 0;
+                        if (self.getPose() == Pose.DYING) {
+                            self.setPose(Pose.STANDING);
+                        }
+                        float max = self.getMaxHealth();
+                        if (max <= 0.0f) max = 20.0f;
+                        ImmortalEnforcer.setRawHealth(self, max);
+                    } catch (Exception ignored) {}
+                }
+            } catch (Exception ignored) {}
+        }
+
         if ((CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) && (self.deathTime >= 60 || CombatRegistry.isDeadConfirmed(uuid))) {
             ci.cancel();
             return;

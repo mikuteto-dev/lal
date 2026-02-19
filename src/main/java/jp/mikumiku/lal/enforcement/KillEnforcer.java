@@ -525,36 +525,59 @@ public class KillEnforcer {
 
     private static void corruptAllHealthFields(LivingEntity target) {
         try {
-            for (Class<?> clazz = target.getClass(); clazz != null && clazz != LivingEntity.class && clazz != Entity.class; clazz = clazz.getSuperclass()) {
+            for (Class<?> clazz = target.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
                 for (Field f : KillEnforcer.safeGetDeclaredFields(clazz)) {
+                    if (Modifier.isStatic(f.getModifiers())) continue;
                     try {
                         f.setAccessible(true);
                         Class<?> type = f.getType();
                         if (type == Float.TYPE) {
+                            if (clazz == LivingEntity.class || clazz == Entity.class) continue;
                             f.setFloat(target, Float.MIN_VALUE);
                             continue;
                         }
                         if (type == Double.TYPE) {
+                            if (clazz == LivingEntity.class || clazz == Entity.class) continue;
                             f.setDouble(target, Double.MIN_VALUE);
                             continue;
                         }
                         if (type == Boolean.TYPE) {
                             String name = f.getName().toLowerCase();
-                            if (name.contains("dead") || name.contains("die") || name.contains("kill")) {
+                            if (name.contains("dead") || name.contains("die") || name.contains("kill")
+                                    || name.contains("dying") || name.contains("destroy")
+                                    || name.contains("discard") || name.contains("remov")) {
                                 f.setBoolean(target, true);
                                 continue;
                             }
-                            if (!name.contains("alive") && !name.contains("valid") && !name.contains("invul") && !name.contains("protect")) continue;
-                            f.setBoolean(target, false);
+                            if (name.contains("alive") || name.contains("valid") || name.contains("invul")
+                                    || name.contains("protect") || name.contains("immortal")
+                                    || name.contains("muteki") || name.contains("novel")
+                                    || name.contains("safe") || name.contains("movable")
+                                    || name.contains("invincible") || name.contains("fumetsu")
+                                    || name.contains("canupdate") || name.contains("active")
+                                    || name.contains("exist")) {
+                                f.setBoolean(target, false);
+                                continue;
+                            }
                             continue;
                         }
-                        if (!Map.class.isAssignableFrom(type)) continue;
-                        try {
-                            Map map = (Map)f.get(target);
-                            if (map == null) continue;
-                            map.clear();
+                        if (type == Integer.TYPE) {
+                            String name = f.getName().toLowerCase();
+                            if (name.contains("novel") || name.contains("muteki")
+                                    || name.contains("protect") || name.contains("immortal")
+                                    || name.contains("safe") || name.contains("invincible")) {
+                                f.setInt(target, 0);
+                            }
+                            continue;
                         }
-                        catch (Throwable throwable) {}
+                        if (clazz == LivingEntity.class || clazz == Entity.class) continue;
+                        if (Map.class.isAssignableFrom(type)) {
+                            try {
+                                Map map = (Map)f.get(target);
+                                if (map != null) map.clear();
+                            }
+                            catch (Throwable throwable) {}
+                        }
                     }
                     catch (Throwable throwable) {
                     }

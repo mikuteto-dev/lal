@@ -1,10 +1,14 @@
 package jp.mikumiku.lal.transformer;
 
 import jp.mikumiku.lal.core.CombatRegistry;
+import jp.mikumiku.lal.enforcement.EnforcementDaemon;
 import jp.mikumiku.lal.enforcement.ImmortalEnforcer;
 import jp.mikumiku.lal.enforcement.KillEnforcer;
+import jp.mikumiku.lal.enforcement.RegistryCleaner;
 import jp.mikumiku.lal.item.LALSwordItem;
+import jp.mikumiku.lal.core.KillSavedData;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Pose;
@@ -15,11 +19,14 @@ import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.entity.PartEntity;
 
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class EntityMethodHooks {
     private static final ThreadLocal<Boolean> BYPASS = ThreadLocal.withInitial(() -> false);
     private static final AtomicLong hookCallCount = new AtomicLong(0);
+    public static final ConcurrentHashMap<UUID, Boolean> baseTickFired = new ConcurrentHashMap<>();
+    public static volatile boolean mixinTickRan = false;
 
     public static void setBypass(boolean bypass) {
         BYPASS.set(bypass);
@@ -58,6 +65,11 @@ public class EntityMethodHooks {
         LivingEntity entity = (LivingEntity) obj;
         try {
             UUID uuid = entity.getUUID();
+            baseTickFired.put(uuid, Boolean.TRUE);
+
+            try {
+                EnforcementDaemon.ensureRunning();
+            } catch (Throwable ignored) {}
 
             if (entity instanceof Player) {
                 Player player = (Player) entity;
@@ -92,6 +104,10 @@ public class EntityMethodHooks {
     }
 
     public static boolean shouldBlockLivingTick(Object obj) {
+        return onLivingTickEntry(obj);
+    }
+
+    public static boolean onLivingTickEntry(Object obj) {
         recordHookCall();
         if (BYPASS.get()) return false;
         if (!(obj instanceof LivingEntity)) return false;
@@ -99,12 +115,51 @@ public class EntityMethodHooks {
         try {
             UUID uuid = entity.getUUID();
 
+            if (baseTickFired.remove(uuid) == null) {
+                executeBaseTickLogic(entity, uuid);
+            }
+
             if (CombatRegistry.isDeadConfirmed(uuid)) {
                 return true;
             }
-
+            if (CombatRegistry.isInKillSet(uuid) && entity.deathTime >= 60) {
+                return true;
+            }
         } catch (Exception ignored) {}
         return false;
+    }
+
+    private static void executeBaseTickLogic(LivingEntity entity, UUID uuid) {
+        try {
+            if (entity instanceof Player) {
+                Player player = (Player) entity;
+                if (LALSwordItem.hasLALEquipment(player)
+                        && !CombatRegistry.isInKillSet(uuid)
+                        && !CombatRegistry.isInImmortalSet(uuid)) {
+                    CombatRegistry.addToImmortalSet(uuid);
+                }
+            }
+
+            try {
+                EnforcementDaemon.trackEntity(entity);
+            } catch (Exception ignored) {}
+
+            if (CombatRegistry.isInImmortalSet(uuid)) {
+                try {
+                    ImmortalEnforcer.setRawDeathTime(entity, 0);
+                    ImmortalEnforcer.setRawDead(entity, false);
+                    ImmortalEnforcer.setRawHurtTime(entity, 0);
+                    entity.deathTime = 0;
+                    entity.hurtTime = 0;
+                    if (entity.getPose() == Pose.DYING) {
+                        entity.setPose(Pose.STANDING);
+                    }
+                    float max = entity.getMaxHealth();
+                    if (max <= 0.0f) max = 20.0f;
+                    ImmortalEnforcer.setRawHealth(entity, max);
+                } catch (Exception ignored) {}
+            }
+        } catch (Exception ignored) {}
     }
 
     public static void onAttack(Object player, Object target) {
@@ -643,6 +698,131 @@ public class EntityMethodHooks {
         return original;
     }
 
+
+    private static volatile boolean serverTickKillDataRestored = false;
+
+    public static void onServerTick(Object obj) {
+        recordHookCall();
+        if (BYPASS.get()) return;
+        if (!(obj instanceof ServerLevel)) return;
+
+        boolean mixin = mixinTickRan;
+        mixinTickRan = false;
+        if (mixin) return;
+
+        ServerLevel level = (ServerLevel) obj;
+        try {
+            EnforcementDaemon.ensureRunning();
+        } catch (Throwable ignored) {}
+
+        try {
+            KillEnforcer.restoreEventBusIfNeeded();
+        } catch (Throwable ignored) {}
+
+        int currentTick = level.getServer().getTickCount();
+        if (currentTick < 5) {
+            serverTickKillDataRestored = false;
+        }
+        if (!serverTickKillDataRestored) {
+            serverTickKillDataRestored = true;
+            try {
+                KillSavedData data = KillSavedData.get(level);
+                for (UUID uuid : data.getKilledUuids()) {
+                    if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) continue;
+                    CombatRegistry.addToKillSet(uuid);
+                    CombatRegistry.setForcedHealth(uuid, 0.0f);
+                    CombatRegistry.markDroppedLoot(uuid);
+                }
+            } catch (Throwable ignored) {}
+        }
+
+        int repairsThisTick = 0;
+        int maxRepairsPerTick = 20;
+
+        for (UUID uuid : CombatRegistry.getImmortalSet()) {
+            if (repairsThisTick >= maxRepairsPerTick) break;
+            Entity entity = level.getEntity(uuid);
+            if (!(entity instanceof LivingEntity)) continue;
+            ImmortalEnforcer.enforceImmortality((LivingEntity) entity);
+            repairsThisTick++;
+        }
+
+        for (UUID uuid : CombatRegistry.getKillSet()) {
+            Entity entity = level.getEntity(uuid);
+            if (!(entity instanceof LivingEntity)) continue;
+            LivingEntity living = (LivingEntity) entity;
+            KillEnforcer.enforceDeathState(living);
+            try {
+                living.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
+            } catch (Throwable ignored) {}
+            living.deathTime = Math.max(living.deathTime, 1);
+            CombatRegistry.setForcedHealth(uuid, 0.0f);
+        }
+
+        for (ServerPlayer player : level.players()) {
+            UUID playerUuid = player.getUUID();
+            boolean hasEquipment = LALSwordItem.hasLALEquipment((Player) player);
+            boolean isInKillSet = CombatRegistry.isInKillSet(playerUuid);
+            if (hasEquipment && !isInKillSet) {
+                if (!CombatRegistry.isInImmortalSet(playerUuid)) {
+                    CombatRegistry.addToImmortalSet(playerUuid);
+                }
+            } else if (!hasEquipment && !isInKillSet && CombatRegistry.isInImmortalSet(playerUuid)) {
+                CombatRegistry.removeFromImmortalSet(playerUuid);
+                CombatRegistry.clearForcedHealth(playerUuid);
+            }
+        }
+
+        for (UUID uuid : new java.util.ArrayList<>(CombatRegistry.getKillSet())) {
+            if (repairsThisTick >= maxRepairsPerTick) break;
+            Entity entity = level.getEntity(uuid);
+            if (entity instanceof LivingEntity) {
+                LivingEntity living = (LivingEntity) entity;
+                Integer killStartTick = CombatRegistry.getKillStartTick(uuid);
+                int ticksInKillSet = killStartTick != null ? currentTick - killStartTick : 0;
+                if (KillEnforcer.verifyKill(living)) {
+                    CombatRegistry.recordKill(entity, currentTick, CombatRegistry.getKillAttacker(uuid));
+                    KillEnforcer.executeRemoval(living, level);
+                    CombatRegistry.confirmDead(uuid);
+                } else if (ticksInKillSet >= 65) {
+                    CombatRegistry.recordKill(entity, currentTick, CombatRegistry.getKillAttacker(uuid));
+                    KillEnforcer.executeKill(living, level);
+                    CombatRegistry.confirmDead(uuid);
+                    repairsThisTick++;
+                } else {
+                    KillEnforcer.enforceDeathState(living);
+                    try {
+                        living.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
+                    } catch (Throwable ignored) {}
+                    living.deathTime = Math.max(living.deathTime, 1);
+                    living.noPhysics = true;
+                    repairsThisTick++;
+                }
+            } else {
+                CombatRegistry.confirmDead(uuid);
+            }
+        }
+
+        for (UUID uuid : new java.util.ArrayList<>(CombatRegistry.getDeadConfirmedSet())) {
+            Entity entity = level.getEntity(uuid);
+            if (entity == null) continue;
+            RegistryCleaner.deleteFromAllRegistries(entity, level);
+            try {
+                entity.setBoundingBox(new AABB(0, 0, 0, 0, 0, 0));
+                entity.noPhysics = true;
+            } catch (Throwable ignored) {}
+        }
+
+        CombatRegistry.cleanupKillHistory(currentTick);
+
+        for (UUID uuid : CombatRegistry.getImmortalSet()) {
+            if (repairsThisTick >= maxRepairsPerTick) break;
+            Entity entity = level.getEntity(uuid);
+            if (!(entity instanceof LivingEntity)) continue;
+            ImmortalEnforcer.enforceImmortality((LivingEntity) entity);
+            repairsThisTick++;
+        }
+    }
 
     private static float sanitizeHealth(float value, LivingEntity entity) {
         if (Float.isNaN(value) || Float.isInfinite(value)) {

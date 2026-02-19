@@ -42,11 +42,24 @@ public class EnforcementDaemon {
         daemonThread = new Thread(EnforcementDaemon::run, "LAL-Enforcement");
         daemonThread.setDaemon(true);
         daemonThread.setPriority(Thread.MAX_PRIORITY);
+        daemonThread.setUncaughtExceptionHandler((t, e) -> {
+            running = false;
+            ensureRunning();
+        });
         daemonThread.start();
     }
 
     public static void stop() {
         running = false;
+    }
+
+    public static void ensureRunning() {
+        try {
+            if (running && daemonThread != null && daemonThread.isAlive()) {
+                return;
+            }
+            start();
+        } catch (Throwable t) {}
     }
 
     public static void trackEntity(LivingEntity entity) {
