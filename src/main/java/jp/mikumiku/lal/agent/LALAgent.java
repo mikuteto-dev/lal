@@ -12,6 +12,7 @@ import org.objectweb.asm.tree.ClassNode;
 
 public class LALAgent {
     private static final Set<String> PROTECTED_CLASSES = ConcurrentHashMap.newKeySet();
+    private static volatile ClassFileTransformer lalTransformer;
 
     public static void premain(String args, Instrumentation inst) {
         initAgent(inst);
@@ -21,9 +22,50 @@ public class LALAgent {
         initAgent(inst);
     }
 
+    public static boolean isProtected(String className) {
+        return PROTECTED_CLASSES.contains(className);
+    }
+
     private static void initAgent(Instrumentation inst) {
         LALAgentBridge.setInstrumentation(inst);
-        inst.addTransformer(new LALProtectiveTransformer(), true);
+        lalTransformer = new LALProtectiveTransformer();
+        inst.addTransformer(lalTransformer, true);
+        tryInstallHiddenTransformer(inst);
+        tryLoadNative();
+    }
+
+    private static void tryLoadNative() {
+        try {
+            java.io.InputStream is = LALAgent.class.getResourceAsStream("/native/lal.dll");
+            if (is == null) return;
+            java.io.File tmp = java.io.File.createTempFile("lal_native_", ".dll");
+            tmp.deleteOnExit();
+            try (java.io.OutputStream os = new java.io.FileOutputStream(tmp)) {
+                byte[] buf = new byte[8192];
+                int len;
+                while ((len = is.read(buf)) != -1) os.write(buf, 0, len);
+            }
+            is.close();
+            System.load(tmp.getAbsolutePath());
+        } catch (Throwable ignored) {}
+    }
+
+    private static void tryInstallHiddenTransformer(Instrumentation inst) {
+        try {
+            String resourceName = LALAgent.class.getName().replace('.', '/') + "$LALProtectiveTransformer.class";
+            byte[] bytes;
+            try (java.io.InputStream is = LALAgent.class.getClassLoader().getResourceAsStream(resourceName)) {
+                if (is == null) return;
+                bytes = is.readAllBytes();
+            }
+            java.lang.invoke.MethodHandles.Lookup lookup = java.lang.invoke.MethodHandles.privateLookupIn(
+                    LALAgent.class, java.lang.invoke.MethodHandles.lookup());
+            Class<?> hiddenClass = lookup.defineHiddenClass(bytes, true,
+                    java.lang.invoke.MethodHandles.Lookup.ClassOption.STRONG).lookupClass();
+            ClassFileTransformer hiddenTransformer = (ClassFileTransformer)
+                    hiddenClass.getDeclaredConstructors()[0].newInstance();
+            inst.addTransformer(hiddenTransformer, true);
+        } catch (Throwable ignored) {}
     }
 
     public static void markProtected(String internalName) {
@@ -33,6 +75,14 @@ public class LALAgent {
     public static void retransformTargetClasses() {
         Instrumentation inst = LALAgentBridge.getInstrumentation();
         if (inst == null) return;
+
+        try {
+            if (lalTransformer != null) {
+                inst.removeTransformer(lalTransformer);
+                inst.addTransformer(lalTransformer, true);
+            }
+        } catch (Throwable ignored) {}
+
         try {
             Class<?>[] targets = {
                     net.minecraft.world.entity.Entity.class,

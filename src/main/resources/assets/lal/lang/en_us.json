@@ -1,6 +1,8 @@
 {
   "item.lal.lal_sword": "LAL Sword",
   "item.lal.lal_bow": "LAL Bow",
+  "item.lal.lal_breaker": "LAL Breaker",
+  "item.lal.lal_breaker.tooltip": "Bypasses all defenses. Gradually reduces max HP.",
   "item.lal.lal_helmet": "LAL Helmet",
   "item.lal.lal_chestplate": "LAL Chestplate",
   "item.lal.lal_leggings": "LAL Leggings",

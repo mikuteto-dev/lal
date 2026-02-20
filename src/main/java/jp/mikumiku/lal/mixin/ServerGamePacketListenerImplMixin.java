@@ -2,6 +2,7 @@ package jp.mikumiku.lal.mixin;
 
 import jp.mikumiku.lal.core.CombatRegistry;
 import jp.mikumiku.lal.enforcement.KillEnforcer;
+import jp.mikumiku.lal.item.LALBreakerItem;
 import jp.mikumiku.lal.item.LALSwordItem;
 import net.minecraft.network.protocol.game.ServerboundInteractPacket;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
@@ -29,7 +30,9 @@ public class ServerGamePacketListenerImplMixin {
             ServerPlayer attacker = this.player;
             if (attacker == null) return;
 
-            if (!(attacker.getMainHandItem().getItem() instanceof LALSwordItem)) return;
+            boolean hasSword = attacker.getMainHandItem().getItem() instanceof LALSwordItem;
+            boolean hasBreaker = LALBreakerItem.isHoldingBreaker(attacker);
+            if (!hasSword && !hasBreaker) return;
 
             ServerLevel level = attacker.serverLevel();
             Entity target = packet.getTarget(level);
@@ -52,7 +55,13 @@ public class ServerGamePacketListenerImplMixin {
             });
 
             if (isAttack[0]) {
-                KillEnforcer.forceKill((LivingEntity) resolved, level, attacker);
+                LivingEntity living = (LivingEntity) resolved;
+                if (hasSword) {
+                    KillEnforcer.forceKill(living, level, attacker);
+                }
+                if (hasBreaker) {
+                    LALBreakerItem.asmBreakAttack(living, level, attacker);
+                }
             }
         } catch (Exception ignored) {}
     }

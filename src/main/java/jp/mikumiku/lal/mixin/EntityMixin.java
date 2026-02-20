@@ -9,6 +9,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.entity.EntityInLevelCallback;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
@@ -151,6 +152,16 @@ public abstract class EntityMixin {
             return;
         }
         if (CombatRegistry.isInImmortalSet(self)) {
+            ci.cancel();
+        }
+    }
+
+    @Inject(method={"setLevelCallback"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$onSetLevelCallback(EntityInLevelCallback callback, CallbackInfo ci) {
+        if (EntityMethodHooks.isBypass()) return;
+        Entity self = (Entity)(Object)this;
+        if (!CombatRegistry.isInImmortalSet(self)) return;
+        if (callback == null || callback == EntityInLevelCallback.NULL) {
             ci.cancel();
         }
     }
@@ -305,6 +316,14 @@ public abstract class EntityMixin {
         Entity self = (Entity)(Object)this;
         if (CombatRegistry.isInImmortalSet(self)) {
             ci.cancel();
+        }
+    }
+
+    @Inject(method={"shouldBeSaved"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$shouldBeSaved(CallbackInfoReturnable<Boolean> cir) {
+        Entity self = (Entity)(Object)this;
+        if (CombatRegistry.isInImmortalSet(self)) {
+            cir.setReturnValue(true);
         }
     }
 }

@@ -33,6 +33,9 @@ public abstract class ServerLevelMixin {
     private static final AABB EMPTY_AABB = new AABB(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     private static final Set<UUID> GHOST_CLEANUP = ConcurrentHashMap.newKeySet();
     private static volatile boolean lal$killDataRestored = false;
+    private static final ConcurrentHashMap<UUID, Integer> GHOST_RETRY_COUNT = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<UUID, Integer> DEAD_RETRY_COUNT = new ConcurrentHashMap<>();
+    private static final int MAX_DELETION_RETRIES = 2048;
 
     public ServerLevelMixin() {
         super();
@@ -92,7 +95,6 @@ public abstract class ServerLevelMixin {
             }
             catch (Exception exception) {
                 }
-            living.deathTime = Math.max(living.deathTime, 1);
             CombatRegistry.setForcedHealth(uuid, 0.0f);
         }
         for (ServerPlayer player : level.players()) {
@@ -131,6 +133,7 @@ public abstract class ServerLevelMixin {
                 int n = ticksInKillSet = killStartTick != null ? tickCount - killStartTick : 0;
                 if (KillEnforcer.verifyKill(living)) {
                     CombatRegistry.recordKill((Entity)living, tickCount, CombatRegistry.getKillAttacker(uuid));
+                    KillEnforcer.initiateKill(living, level);
                     KillEnforcer.executeRemoval(living, level);
                     entry2.recordSuccess();
                     CombatRegistry.confirmDead(uuid);
@@ -154,7 +157,6 @@ public abstract class ServerLevelMixin {
                 }
                 catch (Exception exception) {
                         }
-                living.deathTime = Math.max(living.deathTime, 1);
                 living.noPhysics = true;
                 ++repairsThisTick;
                 continue;
@@ -167,6 +169,12 @@ public abstract class ServerLevelMixin {
             Entity ghost = level.getEntity(uuid);
             if (ghost == null) {
                 GHOST_CLEANUP.remove(uuid);
+                GHOST_RETRY_COUNT.remove(uuid);
+                continue;
+            }
+            int ghostRetries = GHOST_RETRY_COUNT.merge(uuid, 1, Integer::sum);
+            if (ghostRetries > MAX_DELETION_RETRIES) {
+                try { ghost.noPhysics = true; } catch (Throwable ignored) {}
                 continue;
             }
             if (!(ghost instanceof LivingEntity)) continue;
@@ -184,7 +192,15 @@ public abstract class ServerLevelMixin {
         }
         for (UUID uuid : new ArrayList<UUID>(CombatRegistry.getDeadConfirmedSet())) {
             entity = level.getEntity(uuid);
-            if (entity == null) continue;
+            if (entity == null) {
+                DEAD_RETRY_COUNT.remove(uuid);
+                continue;
+            }
+            int deadRetries = DEAD_RETRY_COUNT.merge(uuid, 1, Integer::sum);
+            if (deadRetries > MAX_DELETION_RETRIES) {
+                try { entity.noPhysics = true; } catch (Throwable ignored) {}
+                continue;
+            }
             RegistryCleaner.deleteFromAllRegistries(entity, level);
             ServerLevelMixin.lal$forceRemoveEntity(entity);
             try {

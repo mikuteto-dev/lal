@@ -216,12 +216,21 @@ public class LALTransformer {
                 .callsite("shouldDropExperience", "(Ljava/lang/Object;Z)Z")
                 .build());
 
+        add(new MethodMapping.Builder("m_5706_", "attack", "(Lnet/minecraft/world/entity/Entity;)V", ReturnType.VOID)
+                .headNoCancel("onAttack", "(Ljava/lang/Object;Ljava/lang/Object;)V", 1)
+                .build());
+
         add(new MethodMapping.Builder("m_6075_", "baseTick", "()V", ReturnType.VOID)
                 .headNoCancel("onBaseTick", "(Ljava/lang/Object;)V", 0)
                 .build());
 
         add(new MethodMapping.Builder("m_8119_", "tick", "()V", ReturnType.VOID)
                 .headVoid("onLivingTickEntry")
+                .build());
+
+        add(new MethodMapping.Builder("m_8024_", "isEffectiveAi", "()Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockMobAi", "(Ljava/lang/Object;)Z",
+                        "replaceIsEffectiveAiFalse", "(Ljava/lang/Object;)Z")
                 .build());
 
         add(new MethodMapping.Builder("m_20124_", "setPose", "(Lnet/minecraft/world/entity/Pose;)V", ReturnType.VOID)
@@ -291,6 +300,26 @@ public class LALTransformer {
 
         add(new MethodMapping.Builder("m_8793_", "tick", "(Ljava/util/function/BooleanSupplier;)V", ReturnType.VOID)
                 .headNoCancel("onServerTick", "(Ljava/lang/Object;)V", 0)
+                .build());
+
+        add(new MethodMapping.Builder("m_6034_", "shouldBeSaved", "()Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockShouldBeSaved", "replaceShouldBeSaved", "(Ljava/lang/Object;)Z")
+                .callsite("shouldBeSaved", "(Ljava/lang/Object;Z)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_21233_", "getMaxHealth", "()F", ReturnType.FLOAT)
+                .callsite("getMaxHealth", "(Ljava/lang/Object;F)F")
+                .build());
+
+        add(new MethodMapping.Builder("m_220157_", "hurt",
+                "(ILnet/minecraft/util/RandomSource;Lnet/minecraft/server/level/ServerPlayer;)Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockItemStackHurt", "(Ljava/lang/Object;)Z",
+                        "replaceItemStackHurt", "(Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_156908_", "setLevelCallback",
+                "(Lnet/minecraft/world/level/entity/EntityInLevelCallback;)V", ReturnType.VOID)
+                .headVoid("shouldBlockSetLevelCallback", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
                 .build());
     }
 

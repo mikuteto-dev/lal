@@ -330,6 +330,17 @@ public abstract class LivingEntityMixin {
         }
     }
 
+    @Inject(method={"getMaxHealth"}, at={@At(value="RETURN")}, cancellable=true)
+    private void lal$getMaxHealth(CallbackInfoReturnable<Float> cir) {
+        LivingEntity self = (LivingEntity)(Object)this;
+        if (CombatRegistry.isInImmortalSet((Entity)self)) {
+            float val = cir.getReturnValue();
+            if (val < 20.0f) {
+                cir.setReturnValue(20.0f);
+            }
+        }
+    }
+
     @Inject(method={"setHealth"}, at={@At(value="HEAD")}, cancellable=true)
     private void lal$onSetHealth(float health, CallbackInfo ci) {
         Player player;

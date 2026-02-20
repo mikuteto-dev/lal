@@ -342,13 +342,6 @@ public class KillEnforcer {
                     try {
                         target.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
                     } catch (Throwable ignored2) {}
-                    try {
-                        level.broadcastEntityEvent((Entity)target, (byte)3);
-                    } catch (Throwable ignored2) {}
-                    try {
-                        level.broadcastEntityEvent((Entity)target, (byte)60);
-                    } catch (Throwable ignored2) {}
-
                     KillEnforcer.cleanupBossEvents((Entity)target);
                     KillEnforcer.setLastHurtByPlayer(target, attacker);
 
@@ -454,22 +447,11 @@ public class KillEnforcer {
             }
             catch (Throwable throwable) {
             }
-            try {
-                level.broadcastEntityEvent((Entity)target, (byte)3);
-            }
-            catch (Throwable throwable) {
-            }
         }
         KillEnforcer.setHealth(target, 0.0f);
         KillEnforcer.setDead(target, true);
-        KillEnforcer.setDeathTime(target, 1);
         try {
             target.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
-        }
-        catch (Throwable dieBodyRan) {
-        }
-        try {
-            target.getEntityData().set(Entity.DATA_POSE, Pose.DYING);
         }
         catch (Throwable dieBodyRan) {
         }
@@ -515,7 +497,6 @@ public class KillEnforcer {
         Level level2 = target.level();
         if (level2 instanceof ServerLevel) {
             ServerLevel sl2 = (ServerLevel)level2;
-            try { sl2.broadcastEntityEvent((Entity)target, (byte)3); } catch (Throwable ignored) {}
 
             KillEnforcer.silentServerRemove((Entity)target, sl2);
         }
@@ -701,7 +682,6 @@ public class KillEnforcer {
             CompoundTag forgeData = target.getPersistentData();
             forgeData.putBoolean("lal_dead", true);
             forgeData.putFloat("Health", 0.0f);
-            forgeData.putInt("DeathTime", 20);
         }
         catch (Throwable throwable) {
         }
@@ -867,13 +847,8 @@ public class KillEnforcer {
         }
         CombatRegistry.setForcedHealth(target.getUUID(), 0.0f);
         int currentDeathTime = KillEnforcer.getDeathTime(target);
-        if (currentDeathTime < 60 && currentDeathTime < 1) {
-            KillEnforcer.setDeathTime(target, 1);
-        }
-        try {
-            target.setPose(Pose.DYING);
-        }
-        catch (Throwable throwable) {
+        if (currentDeathTime < 60) {
+            KillEnforcer.setDeathTime(target, currentDeathTime + 1);
         }
         target.noPhysics = true;
         if (currentDeathTime >= 60) {

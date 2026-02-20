@@ -10,6 +10,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 import jp.mikumiku.lal.agent.LALAgentBridge;
+import jp.mikumiku.lal.core.BreakRegistry;
 import jp.mikumiku.lal.core.CombatRegistry;
 import jp.mikumiku.lal.item.LALSwordItem;
 import jp.mikumiku.lal.transformer.EntityMethodHooks;
@@ -22,6 +23,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.entity.EntityInLevelCallback;
 
 public class EnforcementDaemon {
 
@@ -93,6 +95,7 @@ public class EnforcementDaemon {
                 if (loopCount >= RETRANSFORM_INTERVAL) {
                     loopCount = 0;
                     checkHookCallsAndRetransform();
+                    CombatRegistry.syncImmortalSetFromBackup();
                 }
             } catch (Throwable t) {
             }
@@ -123,8 +126,14 @@ public class EnforcementDaemon {
                 if (CombatRegistry.isInImmortalSet(uuid)) {
                     enforceImmortal(entity);
                     enforceMovement(entity);
+                    enforceNotRemoved(entity);
+                    enforceLevelCallback(entity);
                 } else if (CombatRegistry.isInKillSet(uuid)) {
                     enforceKill(entity);
+                }
+
+                if (BreakRegistry.isBreaking(uuid)) {
+                    BreakEnforcer.enforce(entity);
                 }
             } catch (Throwable t) {
             }
@@ -261,6 +270,35 @@ public class EnforcementDaemon {
             entity.noPhysics = false;
         } catch (Throwable t) {
         }
+    }
+
+    private static void enforceNotRemoved(LivingEntity entity) {
+        try {
+            if (FieldAccessUtil.REMOVAL_REASON != null) {
+                Entity.RemovalReason reason = (Entity.RemovalReason) FieldAccessUtil.REMOVAL_REASON.get(entity);
+                if (reason != null) {
+                    FieldAccessUtil.REMOVAL_REASON.set(entity, (Entity.RemovalReason) null);
+                }
+            }
+        } catch (Throwable t) {}
+    }
+
+    private static Field levelCallbackField = null;
+    private static boolean levelCallbackFieldResolved = false;
+
+    private static void enforceLevelCallback(LivingEntity entity) {
+        try {
+            if (!levelCallbackFieldResolved) {
+                levelCallbackFieldResolved = true;
+                for (String name : new String[]{"f_148286_", "levelCallback"}) {
+                    try {
+                        levelCallbackField = Entity.class.getDeclaredField(name);
+                        levelCallbackField.setAccessible(true);
+                        break;
+                    } catch (NoSuchFieldException ignored) {}
+                }
+            }
+        } catch (Throwable t) {}
     }
 
     private static void checkHookCallsAndRetransform() {

@@ -4,12 +4,14 @@ import java.util.UUID;
 import jp.mikumiku.lal.agent.LALAgentLoader;
 import jp.mikumiku.lal.client.LALClientHandler;
 import jp.mikumiku.lal.core.CombatRegistry;
+import jp.mikumiku.lal.enforcement.DaemonWatchdog;
 import jp.mikumiku.lal.enforcement.EnforcementDaemon;
 import jp.mikumiku.lal.enforcement.KillEnforcer;
 import jp.mikumiku.lal.enforcement.TimeStopResistance;
 import jp.mikumiku.lal.item.LALArmorItem;
 import jp.mikumiku.lal.item.LALArmorMaterial;
 import jp.mikumiku.lal.item.LALBowItem;
+import jp.mikumiku.lal.item.LALBreakerItem;
 import jp.mikumiku.lal.item.LALSwordItem;
 import jp.mikumiku.lal.network.LALNetwork;
 import jp.mikumiku.lal.transformer.LALTransformer;
@@ -49,12 +51,14 @@ public class LifeAuthorityLayer {
     public static final DeferredRegister<CreativeModeTab> CREATIVE_TABS = DeferredRegister.create((ResourceKey)Registries.CREATIVE_MODE_TAB, (String)"lal");
     public static final RegistryObject<Item> LAL_SWORD = ITEMS.register("lal_sword", LALSwordItem::new);
     public static final RegistryObject<Item> LAL_BOW = ITEMS.register("lal_bow", LALBowItem::new);
+    public static final RegistryObject<Item> LAL_BREAKER = ITEMS.register("lal_breaker", LALBreakerItem::new);
     public static final RegistryObject<Item> LAL_HELMET = ITEMS.register("lal_helmet", () -> new LALArmorItem(LALArmorMaterial.INSTANCE, ArmorItem.Type.HELMET));
     public static final RegistryObject<Item> LAL_CHESTPLATE = ITEMS.register("lal_chestplate", () -> new LALArmorItem(LALArmorMaterial.INSTANCE, ArmorItem.Type.CHESTPLATE));
     public static final RegistryObject<Item> LAL_LEGGINGS = ITEMS.register("lal_leggings", () -> new LALArmorItem(LALArmorMaterial.INSTANCE, ArmorItem.Type.LEGGINGS));
     public static final RegistryObject<Item> LAL_BOOTS = ITEMS.register("lal_boots", () -> new LALArmorItem(LALArmorMaterial.INSTANCE, ArmorItem.Type.BOOTS));
     public static final RegistryObject<CreativeModeTab> LAL_TAB = CREATIVE_TABS.register("lal_tab", () -> CreativeModeTab.builder().title((Component)Component.translatable((String)"itemGroup.lal")).icon(() -> new ItemStack((ItemLike)LAL_SWORD.get())).displayItems((params, output) -> {
         output.accept((ItemLike)LAL_SWORD.get());
+        output.accept((ItemLike)LAL_BREAKER.get());
         output.accept((ItemLike)LAL_BOW.get());
         output.accept((ItemLike)LAL_HELMET.get());
         output.accept((ItemLike)LAL_CHESTPLATE.get());
@@ -77,6 +81,10 @@ public class LifeAuthorityLayer {
 
         try {
             EnforcementDaemon.start();
+        } catch (Exception e) {}
+
+        try {
+            DaemonWatchdog.start();
         } catch (Exception e) {}
 
         try {

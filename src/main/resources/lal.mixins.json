@@ -11,7 +11,11 @@
     "ItemStackMixin",
     "SynchedEntityDataMixin",
     "PlayerMixin",
-    "ServerGamePacketListenerImplMixin"
+    "ServerGamePacketListenerImplMixin",
+    "EntitySectionMixin",
+    "EntityTickListMixin",
+    "ChunkSerializerMixin",
+    "MobMixin"
   ],
   "client": [
     "MinecraftMixin"

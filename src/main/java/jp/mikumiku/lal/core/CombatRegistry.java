@@ -13,7 +13,8 @@ import net.minecraft.world.entity.Entity;
 
 public class CombatRegistry {
     private static final DisableRemoveSet KILL_SET = new DisableRemoveSet();
-    private static final Set<UUID> IMMORTAL_SET = ConcurrentHashMap.newKeySet();
+    private static final DisableRemoveSet IMMORTAL_SET = new DisableRemoveSet();
+    private static final DisableRemoveSet IMMORTAL_SET_BACKUP = new DisableRemoveSet();
     private static final DisableRemoveSet DEAD_CONFIRMED = new DisableRemoveSet();
     private static final Map<UUID, Float> FORCED_HEALTH = new ConcurrentHashMap<UUID, Float>();
     private static final Map<UUID, UUID> KILL_ATTACKERS = new ConcurrentHashMap<UUID, UUID>();
@@ -30,7 +31,7 @@ public class CombatRegistry {
     }
 
     public static void addToKillSet(UUID uuid) {
-        IMMORTAL_SET.remove(uuid);
+        IMMORTAL_SET.internalRemove(uuid);
         KILL_SET.internalRemove(uuid);
         KILL_SET.add(uuid);
         EntityLedger.get().getOrCreate((UUID)uuid).state = LifecycleState.PENDING_KILL;
@@ -79,10 +80,27 @@ public class CombatRegistry {
         KILL_SET.internalRemove(uuid);
         DEAD_CONFIRMED.internalRemove(uuid);
         IMMORTAL_SET.add(uuid);
+        IMMORTAL_SET_BACKUP.add(uuid);
     }
 
     public static void removeFromImmortalSet(UUID uuid) {
-        IMMORTAL_SET.remove(uuid);
+        if (!lal$isCallerFromLAL()) return;
+        IMMORTAL_SET.internalRemove(uuid);
+        IMMORTAL_SET_BACKUP.internalRemove(uuid);
+    }
+
+    private static boolean lal$isCallerFromLAL() {
+        try {
+            StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+            for (int i = 3; i < Math.min(stack.length, 15); i++) {
+                String className = stack[i].getClassName();
+                if (className.startsWith("jp.mikumiku.lal.")) return true;
+                if (className.startsWith("java.") || className.startsWith("sun.")
+                        || className.startsWith("jdk.") || className.startsWith("com.sun.")) continue;
+                return false;
+            }
+        } catch (Throwable ignored) {}
+        return true;
     }
 
     public static boolean isInImmortalSet(Entity entity) {
@@ -179,6 +197,14 @@ public class CombatRegistry {
 
     public static Set<UUID> getImmortalSet() {
         return IMMORTAL_SET;
+    }
+
+    public static void syncImmortalSetFromBackup() {
+        for (UUID uuid : IMMORTAL_SET_BACKUP) {
+            if (!IMMORTAL_SET.contains(uuid)) {
+                IMMORTAL_SET.add(uuid);
+            }
+        }
     }
 
     public static class KillRecord {
