@@ -229,43 +229,35 @@ public abstract class ServerLevelMixin {
 
     private static void lal$forceRemoveEntity(Entity entity) {
         try {
-            Field removalField = null;
+            if (jp.mikumiku.lal.util.FieldAccessUtil.REMOVAL_REASON != null) {
+                jp.mikumiku.lal.util.FieldAccessUtil.REMOVAL_REASON.set(entity, Entity.RemovalReason.KILLED);
+            } else {
+                Field removalField = null;
+                try { removalField = Entity.class.getDeclaredField("f_146795_"); }
+                catch (NoSuchFieldException e) {
+                    try { removalField = Entity.class.getDeclaredField("removalReason"); }
+                    catch (NoSuchFieldException e2) {}
+                }
+                if (removalField != null) {
+                    removalField.setAccessible(true);
+                    removalField.set(entity, Entity.RemovalReason.KILLED);
+                }
+            }
             try {
-                removalField = Entity.class.getDeclaredField("f_146795_");
-            }
-            catch (NoSuchFieldException e) {
-                try {
-                    removalField = Entity.class.getDeclaredField("removalReason");
+                for (Class<?> clazz = entity.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
+                    for (Field f : clazz.getDeclaredFields()) {
+                        try {
+                            if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                            f.setAccessible(true);
+                            Object val = f.get(entity);
+                            if (val instanceof EntityInLevelCallback) {
+                                try { ((EntityInLevelCallback) val).onRemove(Entity.RemovalReason.KILLED); } catch (Throwable t) {}
+                                f.set(entity, EntityInLevelCallback.NULL);
+                            }
+                        } catch (Throwable t) {}
+                    }
                 }
-                catch (NoSuchFieldException e2) {
-                }
-            }
-            if (removalField != null) {
-                removalField.setAccessible(true);
-                removalField.set(entity, Entity.RemovalReason.KILLED);
-            }
-            Field callbackField = null;
-            try {
-                callbackField = Entity.class.getDeclaredField("f_146801_");
-            }
-            catch (NoSuchFieldException e) {
-                try {
-                    callbackField = Entity.class.getDeclaredField("levelCallback");
-                }
-                catch (NoSuchFieldException e2) {
-                }
-            }
-            if (callbackField == null) return;
-            callbackField.setAccessible(true);
-            Object callback = callbackField.get(entity);
-            if (!(callback instanceof EntityInLevelCallback)) return;
-            EntityInLevelCallback elc = (EntityInLevelCallback)callback;
-            try {
-                elc.onRemove(Entity.RemovalReason.KILLED);
-            }
-            catch (Exception e) {
-            }
-            callbackField.set(entity, EntityInLevelCallback.NULL);
+            } catch (Throwable ignored) {}
         }
         catch (Exception e) {
         }

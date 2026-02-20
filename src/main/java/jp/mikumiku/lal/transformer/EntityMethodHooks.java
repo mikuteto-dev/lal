@@ -27,6 +27,8 @@ public class EntityMethodHooks {
     private static final AtomicLong hookCallCount = new AtomicLong(0);
     public static final ConcurrentHashMap<UUID, Boolean> baseTickFired = new ConcurrentHashMap<>();
     public static volatile boolean mixinTickRan = false;
+    public static final ConcurrentHashMap<UUID, Integer> lastTickSeen = new ConcurrentHashMap<>();
+    public static final ConcurrentHashMap<UUID, Boolean> forcedTickThisTick = new ConcurrentHashMap<>();
 
     public static void setBypass(boolean bypass) {
         BYPASS.set(bypass);
@@ -66,6 +68,14 @@ public class EntityMethodHooks {
         try {
             UUID uuid = entity.getUUID();
             baseTickFired.put(uuid, Boolean.TRUE);
+
+            try {
+                Level level = entity.level();
+                if (level != null && !level.isClientSide()) {
+                    int tick = level.getServer() != null ? level.getServer().getTickCount() : 0;
+                    if (tick > 0) lastTickSeen.put(uuid, tick);
+                }
+            } catch (Throwable ignored) {}
 
             try {
                 EnforcementDaemon.ensureRunning();
@@ -285,7 +295,12 @@ public class EntityMethodHooks {
         if (!(obj instanceof Entity)) return false;
         try {
             Entity entity = (Entity) obj;
-            return CombatRegistry.isInImmortalSet(entity);
+            if (CombatRegistry.isInImmortalSet(entity)) return true;
+            if (CombatRegistry.isInKillSet(entity) || CombatRegistry.isDeadConfirmed(entity.getUUID())) return true;
+            if (entity instanceof Player) {
+                Player player = (Player) entity;
+                if (LALSwordItem.hasLALEquipment(player)) return true;
+            }
         } catch (Exception ignored) {}
         return false;
     }
@@ -822,6 +837,25 @@ public class EntityMethodHooks {
             ImmortalEnforcer.enforceImmortality((LivingEntity) entity);
             repairsThisTick++;
         }
+
+        forcedTickThisTick.clear();
+        for (ServerPlayer player : level.players()) {
+            try {
+                if (!LALSwordItem.hasLALEquipment((Player) player)) continue;
+                UUID playerUuid = player.getUUID();
+                Integer lastTick = lastTickSeen.get(playerUuid);
+                if (lastTick != null && currentTick - lastTick > 1) {
+                    forcedTickThisTick.put(playerUuid, Boolean.TRUE);
+                    BYPASS.set(true);
+                    try {
+                        player.tick();
+                    } finally {
+                        BYPASS.set(false);
+                    }
+                    lastTickSeen.put(playerUuid, currentTick);
+                }
+            } catch (Throwable ignored) {}
+        }
     }
 
     private static float sanitizeHealth(float value, LivingEntity entity) {
@@ -829,5 +863,109 @@ public class EntityMethodHooks {
             return Math.max(entity.getMaxHealth(), 20.0f);
         }
         return value;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Object getFilteredById(Object lookup) {
+        try {
+            if (CombatRegistry.getDeadConfirmedSet().isEmpty() && CombatRegistry.getKillSet().isEmpty()) {
+                return getByIdField(lookup);
+            }
+            Object byId = getByIdField(lookup);
+            if (byId == null) return null;
+            try {
+                byId.getClass().getMethod("values").invoke(byId);
+                Object values = byId.getClass().getMethod("values").invoke(byId);
+                if (values instanceof Iterable) {
+                    java.util.Iterator<?> it = ((Iterable<?>) values).iterator();
+                    while (it.hasNext()) {
+                        Object entry = it.next();
+                        if (entry instanceof Entity) {
+                            Entity entity = (Entity) entry;
+                            UUID uuid = entity.getUUID();
+                            if (CombatRegistry.isDeadConfirmed(uuid) ||
+                                (CombatRegistry.isInKillSet(uuid) && entity instanceof LivingEntity && ((LivingEntity)entity).deathTime >= 60)) {
+                                try { it.remove(); } catch (Throwable ignored) {}
+                            }
+                        }
+                    }
+                }
+            } catch (java.util.ConcurrentModificationException ignored) {}
+            return byId;
+        } catch (Throwable t) {
+            return getByIdField(lookup);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Object getFilteredByUuid(Object lookup) {
+        try {
+            if (CombatRegistry.getDeadConfirmedSet().isEmpty() && CombatRegistry.getKillSet().isEmpty()) {
+                return getByUuidField(lookup);
+            }
+            Object byUuid = getByUuidField(lookup);
+            if (byUuid instanceof java.util.Map) {
+                java.util.Map<?, ?> map = (java.util.Map<?, ?>) byUuid;
+                try {
+                    java.util.Iterator<? extends java.util.Map.Entry<?, ?>> it = map.entrySet().iterator();
+                    while (it.hasNext()) {
+                        java.util.Map.Entry<?, ?> entry = it.next();
+                        Object key = entry.getKey();
+                        if (key instanceof UUID) {
+                            UUID uuid = (UUID) key;
+                            if (CombatRegistry.isDeadConfirmed(uuid)) {
+                                try { it.remove(); } catch (Throwable ignored) {}
+                            }
+                        }
+                    }
+                } catch (java.util.ConcurrentModificationException ignored) {}
+            }
+            return byUuid;
+        } catch (Throwable t) {
+            return getByUuidField(lookup);
+        }
+    }
+
+    private static volatile java.lang.reflect.Field byIdFieldCache;
+    private static volatile java.lang.reflect.Field byUuidFieldCache;
+    private static volatile boolean fieldsResolved = false;
+
+    private static Object getByIdField(Object lookup) {
+        try {
+            resolveFields(lookup);
+            if (byIdFieldCache != null) return byIdFieldCache.get(lookup);
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private static Object getByUuidField(Object lookup) {
+        try {
+            resolveFields(lookup);
+            if (byUuidFieldCache != null) return byUuidFieldCache.get(lookup);
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private static void resolveFields(Object lookup) {
+        if (fieldsResolved) return;
+        fieldsResolved = true;
+        try {
+            Class<?> clazz = lookup.getClass();
+            for (Class<?> c = clazz; c != null && c != Object.class; c = c.getSuperclass()) {
+                for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                    f.setAccessible(true);
+                    String name = f.getName();
+                    if (name.equals("byId") || name.equals("f_156816_") || name.equals("f_156807_")) {
+                        if (f.getType().getName().contains("Int2Object")) {
+                            byIdFieldCache = f;
+                        }
+                    } else if (name.equals("byUuid") || name.equals("f_156817_") || name.equals("f_156808_")) {
+                        if (java.util.Map.class.isAssignableFrom(f.getType())) {
+                            byUuidFieldCache = f;
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 }

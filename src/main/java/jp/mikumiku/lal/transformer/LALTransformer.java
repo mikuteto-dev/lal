@@ -317,7 +317,10 @@ public class LALTransformer {
 
     public static boolean transform(ClassNode classNode, ILaunchPluginService.Phase phase) {
         if (classNode.name.startsWith("jp/mikumiku/lal/transformer")) return false;
-        if (!hasTargetMethodReference(classNode)) {
+
+        boolean hasMethodRef = hasTargetMethodReference(classNode);
+        boolean hasFieldRef = hasEntityLookupFieldReference(classNode);
+        if (!hasMethodRef && !hasFieldRef) {
             skippedClasses.incrementAndGet();
             return false;
         }
@@ -330,11 +333,16 @@ public class LALTransformer {
             boolean methodModified = false;
 
             if (doReturn) {
-                methodModified |= processCallsites(method);
-                methodModified |= processReturnHooks(method);
+                if (hasMethodRef) {
+                    methodModified |= processCallsites(method);
+                    methodModified |= processReturnHooks(method);
+                }
+                if (hasFieldRef) {
+                    methodModified |= processEntityLookupFields(method);
+                }
             }
 
-            if (doHead) {
+            if (doHead && hasMethodRef) {
                 methodModified |= processHeadInjection(method);
             }
 
@@ -551,6 +559,63 @@ public class LALTransformer {
             }
         }
         return false;
+    }
+
+    private static final Set<String> ENTITY_LOOKUP_FIELD_NAMES = Set.of(
+            "byId", "f_156816_", "f_156807_",
+            "byUuid", "f_156817_", "f_156808_"
+    );
+
+    private static boolean hasEntityLookupFieldReference(ClassNode classNode) {
+        for (MethodNode method : classNode.methods) {
+            for (AbstractInsnNode insn : method.instructions) {
+                if (!(insn instanceof FieldInsnNode)) continue;
+                FieldInsnNode fi = (FieldInsnNode) insn;
+                if (fi.getOpcode() != Opcodes.GETFIELD) continue;
+                if (ENTITY_LOOKUP_FIELD_NAMES.contains(fi.name) &&
+                    fi.owner.contains("EntityLookup")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean processEntityLookupFields(MethodNode method) {
+        if (method.instructions.size() == 0) return false;
+        boolean modified = false;
+        ArrayList<FieldInsnNode> targets = new ArrayList<>();
+        for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            if (!(insn instanceof FieldInsnNode)) continue;
+            FieldInsnNode fi = (FieldInsnNode) insn;
+            if (fi.getOpcode() != Opcodes.GETFIELD) continue;
+            if (!fi.owner.contains("EntityLookup")) continue;
+            if (ENTITY_LOOKUP_FIELD_NAMES.contains(fi.name)) {
+                targets.add(fi);
+            }
+        }
+        for (FieldInsnNode fi : targets) {
+            String name = fi.name;
+            String fieldDesc = fi.desc;
+            if (name.equals("byId") || name.equals("f_156816_") || name.equals("f_156807_")) {
+                MethodInsnNode replacement = new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                        "getFilteredById",
+                        "(Ljava/lang/Object;)Ljava/lang/Object;", false);
+                method.instructions.set(fi, replacement);
+                String castType = fieldDesc.startsWith("L") ? fieldDesc.substring(1, fieldDesc.length() - 1) : fieldDesc;
+                method.instructions.insert(replacement, new TypeInsnNode(Opcodes.CHECKCAST, castType));
+                modified = true;
+            } else if (name.equals("byUuid") || name.equals("f_156817_") || name.equals("f_156808_")) {
+                MethodInsnNode replacement = new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                        "getFilteredByUuid",
+                        "(Ljava/lang/Object;)Ljava/lang/Object;", false);
+                method.instructions.set(fi, replacement);
+                String castType = fieldDesc.startsWith("L") ? fieldDesc.substring(1, fieldDesc.length() - 1) : fieldDesc;
+                method.instructions.insert(replacement, new TypeInsnNode(Opcodes.CHECKCAST, castType));
+                modified = true;
+            }
+        }
+        return modified;
     }
 
     public static int getTransformedClassCount() { return transformedClasses.get(); }

@@ -6,6 +6,7 @@ import jp.mikumiku.lal.client.LALClientHandler;
 import jp.mikumiku.lal.core.CombatRegistry;
 import jp.mikumiku.lal.enforcement.EnforcementDaemon;
 import jp.mikumiku.lal.enforcement.KillEnforcer;
+import jp.mikumiku.lal.enforcement.TimeStopResistance;
 import jp.mikumiku.lal.item.LALArmorItem;
 import jp.mikumiku.lal.item.LALArmorMaterial;
 import jp.mikumiku.lal.item.LALBowItem;
@@ -76,6 +77,10 @@ public class LifeAuthorityLayer {
 
         try {
             EnforcementDaemon.start();
+        } catch (Exception e) {}
+
+        try {
+            TimeStopResistance.registerEventHandlers();
         } catch (Exception e) {}
 
         modBus.addListener(this::onCommonSetup);

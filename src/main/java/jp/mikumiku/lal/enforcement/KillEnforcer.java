@@ -644,6 +644,18 @@ public class KillEnforcer {
             catch (Throwable e) {
             }
         }
+        try {
+            SynchedEntityData entityData = target.getEntityData();
+            entityData.set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
+            for (String dirtyName : new String[]{"isDirty", "f_135344_"}) {
+                try {
+                    Field dirtyField = SynchedEntityData.class.getDeclaredField(dirtyName);
+                    dirtyField.setAccessible(true);
+                    dirtyField.setBoolean(entityData, true);
+                    break;
+                } catch (NoSuchFieldException ignored) {}
+            }
+        } catch (Throwable ignored) {}
     }
 
     private static void corruptDataItem(LivingEntity target, Object dataItem) {
@@ -839,11 +851,6 @@ public class KillEnforcer {
     public static void enforceDeathState(LivingEntity target) {
         KillEnforcer.setHealth(target, 0.0f);
         KillEnforcer.setDead(target, true);
-        try {
-            target.setHealth(0.0f);
-        }
-        catch (Throwable throwable) {
-        }
         KillEnforcer.setRemovalReason((Entity)target, null);
         try {
             target.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
@@ -899,6 +906,7 @@ public class KillEnforcer {
             }
         }
         KillEnforcer.corruptAllHealthFields(target);
+        KillEnforcer.corruptSynchedEntityData(target);
     }
 
     public static int getDeathTime(LivingEntity target) {
@@ -976,6 +984,34 @@ public class KillEnforcer {
             }
             KillEnforcer.purgeExternalState((Entity)target);
             KillEnforcer.restoreEventBus();
+            try {
+                if (target.isMultipartEntity()) {
+                    net.minecraftforge.entity.PartEntity<?>[] parts = ((Entity) target).getParts();
+                    if (parts != null) {
+                        int[] partIds = new int[parts.length];
+                        for (int i = 0; i < parts.length; i++) {
+                            net.minecraftforge.entity.PartEntity<?> part = parts[i];
+                            partIds[i] = part.getId();
+                            try {
+                                KillEnforcer.setRemovalReason(part, Entity.RemovalReason.KILLED);
+                                RegistryCleaner.deleteFromAllRegistries(part, level);
+                                KillEnforcer.sendRemovePacketToTrackers(part, level);
+                                part.setBoundingBox(new AABB(0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
+                            } catch (Throwable ignored) {}
+                            try { level.dragonParts.remove(part.getId()); } catch (Throwable ignored) {}
+                        }
+                        try {
+                            ClientboundRemoveEntitiesPacket partRemovePacket = new ClientboundRemoveEntitiesPacket(partIds);
+                            for (ServerPlayer player : level.players()) {
+                                try { player.connection.send((Packet) partRemovePacket); } catch (Throwable ignored) {}
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                }
+            } catch (Throwable ignored) {}
+            if (target instanceof EnderDragon) {
+                KillEnforcer.cleanupEnderDragonFight((EnderDragon) target, level);
+            }
             try {
                 Entity check = level.getEntity(target.getUUID());
                 if (check == null) break block22;
@@ -1232,6 +1268,114 @@ public class KillEnforcer {
         catch (Throwable throwable) {
         }
         return false;
+    }
+
+    private static void cleanupEnderDragonFight(EnderDragon dragon, ServerLevel level) {
+        try {
+
+            net.minecraft.world.level.dimension.end.EndDragonFight dragonFight = level.getDragonFight();
+            if (dragonFight == null) {
+
+                for (Class<?> c = level.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                    for (Field f : FieldAccessUtil.safeGetDeclaredFields(c)) {
+                        try {
+                            if (!net.minecraft.world.level.dimension.end.EndDragonFight.class.isAssignableFrom(f.getType())) continue;
+                            f.setAccessible(true);
+                            dragonFight = (net.minecraft.world.level.dimension.end.EndDragonFight) f.get(level);
+                            if (dragonFight != null) break;
+                        } catch (Throwable ignored) {}
+                    }
+                    if (dragonFight != null) break;
+                }
+            }
+            if (dragonFight == null) return;
+
+
+            try {
+                Field bossEventField = null;
+                for (Class<?> c = dragonFight.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                    for (Field f : FieldAccessUtil.safeGetDeclaredFields(c)) {
+                        try {
+                            if (ServerBossEvent.class.isAssignableFrom(f.getType())) {
+                                f.setAccessible(true);
+                                bossEventField = f;
+                                break;
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                    if (bossEventField != null) break;
+                }
+                if (bossEventField != null) {
+                    ServerBossEvent bossEvent = (ServerBossEvent) bossEventField.get(dragonFight);
+                    if (bossEvent != null) {
+                        bossEvent.setProgress(0.0f);
+                        bossEvent.setVisible(false);
+                        bossEvent.removeAllPlayers();
+                    }
+                }
+            } catch (Throwable ignored) {}
+
+
+            for (Class<?> c = dragonFight.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                for (Field f : FieldAccessUtil.safeGetDeclaredFields(c)) {
+                    try {
+                        if (f.getType() != boolean.class) continue;
+                        f.setAccessible(true);
+                        String name = f.getName();
+
+                        if (name.equals("previouslyKilled") || name.equals("f_64068_")
+                                || name.equals("dragonKilled") || name.equals("f_64069_")) {
+                            f.setBoolean(dragonFight, true);
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
+
+
+            for (Class<?> c = dragonFight.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                for (Field f : FieldAccessUtil.safeGetDeclaredFields(c)) {
+                    try {
+                        f.setAccessible(true);
+                        Object val = f.get(dragonFight);
+                        if (val instanceof java.util.Optional) {
+                            java.util.Optional<?> opt = (java.util.Optional<?>) val;
+                            if (opt.isPresent() && opt.get() instanceof UUID) {
+                                UUID dragonUuid = (UUID) opt.get();
+                                if (dragonUuid.equals(dragon.getUUID())) {
+                                    f.set(dragonFight, java.util.Optional.empty());
+                                }
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
+
+
+            for (Class<?> c = dragonFight.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                for (Field f : FieldAccessUtil.safeGetDeclaredFields(c)) {
+                    try {
+                        if (!EnderDragon.class.isAssignableFrom(f.getType())) continue;
+                        f.setAccessible(true);
+                        f.set(dragonFight, null);
+                    } catch (Throwable ignored) {}
+                }
+            }
+
+
+            for (Class<?> c = dragonFight.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                for (Field f : FieldAccessUtil.safeGetDeclaredFields(c)) {
+                    try {
+                        if (Modifier.isStatic(f.getModifiers())) continue;
+                        String typeName = f.getType().getSimpleName();
+                        if (typeName.contains("DragonRespawnAnimation") || typeName.contains("RespawnAnimation")) {
+                            f.setAccessible(true);
+                            f.set(dragonFight, null);
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
+
+        } catch (Throwable ignored) {}
     }
 
     private static void purgeExternalState(Entity target) {
@@ -2271,6 +2415,9 @@ public class KillEnforcer {
 
     public static void restoreEventBusIfNeeded() {
         KillEnforcer.restoreEventBus();
+        try {
+            jp.mikumiku.lal.core.LALEventBus.reRegisterAll();
+        } catch (Throwable ignored) {}
     }
 
     private static void restoreEventBus() {

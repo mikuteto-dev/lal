@@ -12,9 +12,9 @@ import jp.mikumiku.lal.core.LifecycleState;
 import net.minecraft.world.entity.Entity;
 
 public class CombatRegistry {
-    private static final Set<UUID> KILL_SET = ConcurrentHashMap.newKeySet();
+    private static final DisableRemoveSet KILL_SET = new DisableRemoveSet();
     private static final Set<UUID> IMMORTAL_SET = ConcurrentHashMap.newKeySet();
-    private static final Set<UUID> DEAD_CONFIRMED = ConcurrentHashMap.newKeySet();
+    private static final DisableRemoveSet DEAD_CONFIRMED = new DisableRemoveSet();
     private static final Map<UUID, Float> FORCED_HEALTH = new ConcurrentHashMap<UUID, Float>();
     private static final Map<UUID, UUID> KILL_ATTACKERS = new ConcurrentHashMap<UUID, UUID>();
     private static final Map<UUID, Integer> KILL_START_TICK = new ConcurrentHashMap<UUID, Integer>();
@@ -31,6 +31,7 @@ public class CombatRegistry {
 
     public static void addToKillSet(UUID uuid) {
         IMMORTAL_SET.remove(uuid);
+        KILL_SET.internalRemove(uuid);
         KILL_SET.add(uuid);
         EntityLedger.get().getOrCreate((UUID)uuid).state = LifecycleState.PENDING_KILL;
     }
@@ -44,7 +45,7 @@ public class CombatRegistry {
     }
 
     public static void removeFromKillSet(UUID uuid) {
-        KILL_SET.remove(uuid);
+        KILL_SET.internalRemove(uuid);
     }
 
     public static boolean isInKillSet(Entity entity) {
@@ -75,8 +76,8 @@ public class CombatRegistry {
     }
 
     public static void addToImmortalSet(UUID uuid) {
-        KILL_SET.remove(uuid);
-        DEAD_CONFIRMED.remove(uuid);
+        KILL_SET.internalRemove(uuid);
+        DEAD_CONFIRMED.internalRemove(uuid);
         IMMORTAL_SET.add(uuid);
     }
 
@@ -96,7 +97,7 @@ public class CombatRegistry {
     }
 
     public static void confirmDead(UUID uuid) {
-        KILL_SET.remove(uuid);
+        KILL_SET.internalRemove(uuid);
         DEAD_CONFIRMED.add(uuid);
         KILL_ATTACKERS.remove(uuid);
         KILL_START_TICK.remove(uuid);
@@ -112,7 +113,7 @@ public class CombatRegistry {
     }
 
     public static void clearDeadConfirmed(UUID uuid) {
-        DEAD_CONFIRMED.remove(uuid);
+        DEAD_CONFIRMED.internalRemove(uuid);
     }
 
     public static Set<UUID> getDeadConfirmedSet() {
