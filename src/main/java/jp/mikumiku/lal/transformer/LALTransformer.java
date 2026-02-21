@@ -302,6 +302,11 @@ public class LALTransformer {
                 .headNoCancel("onServerTick", "(Ljava/lang/Object;)V", 0)
                 .build());
 
+        add(new MethodMapping.Builder("m_46654_", "guardEntityTick",
+                "(Ljava/util/function/Consumer;Lnet/minecraft/world/entity/Entity;)V", ReturnType.VOID)
+                .headNoCancel("onGuardEntityTick", "(Ljava/lang/Object;Ljava/lang/Object;)V", 1)
+                .build());
+
         add(new MethodMapping.Builder("m_6034_", "shouldBeSaved", "()Z", ReturnType.BOOLEAN)
                 .headReturn("shouldBlockShouldBeSaved", "replaceShouldBeSaved", "(Ljava/lang/Object;)Z")
                 .callsite("shouldBeSaved", "(Ljava/lang/Object;Z)Z")

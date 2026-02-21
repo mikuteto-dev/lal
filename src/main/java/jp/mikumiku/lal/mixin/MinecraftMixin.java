@@ -4,6 +4,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import jp.mikumiku.lal.core.CombatRegistry;
 import jp.mikumiku.lal.item.LALSwordItem;
+import jp.mikumiku.lal.transformer.EntityMethodHooks;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.DeathScreen;
 import net.minecraft.client.gui.screens.Screen;
@@ -82,6 +83,13 @@ public class MinecraftMixin {
                 lal$forceClientTick(mc);
             }
         } catch (Exception ignored) {}
+
+        if (EntityMethodHooks.clientLastTickedNano > 0) {
+            long elapsed = System.nanoTime() - EntityMethodHooks.clientLastTickedNano;
+            if (elapsed > 150_000_000L) {
+                lal$forceClientTick(mc);
+            }
+        }
     }
 
     private static void lal$forceClientTick(Minecraft mc) {

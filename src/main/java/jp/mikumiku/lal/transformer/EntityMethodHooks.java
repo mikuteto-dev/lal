@@ -33,6 +33,10 @@ public class EntityMethodHooks {
     public static volatile boolean mixinTickRan = false;
     public static final ConcurrentHashMap<UUID, Integer> lastTickSeen = new ConcurrentHashMap<>();
     public static final ConcurrentHashMap<UUID, Boolean> forcedTickThisTick = new ConcurrentHashMap<>();
+    public static final ConcurrentHashMap<UUID, Integer> normalTickSeen = new ConcurrentHashMap<>();
+    public static final ConcurrentHashMap<UUID, Boolean> normalTickAttempted = new ConcurrentHashMap<>();
+    public static volatile long clientLastTickedNano = 0;
+    private static volatile int lastForcedTickRun = -1;
 
     public static void setBypass(boolean bypass) {
         BYPASS.set(bypass);
@@ -48,6 +52,12 @@ public class EntityMethodHooks {
 
     public static long getAndResetHookCallCount() {
         return hookCallCount.getAndSet(0);
+    }
+
+    public static boolean tryRunForcedTick(int currentTick) {
+        if (lastForcedTickRun == currentTick) return false;
+        lastForcedTickRun = currentTick;
+        return true;
     }
 
     private static boolean checkImmortal(Object obj) {
@@ -77,7 +87,12 @@ public class EntityMethodHooks {
                 Level level = entity.level();
                 if (level != null && !level.isClientSide()) {
                     int tick = level.getServer() != null ? level.getServer().getTickCount() : 0;
-                    if (tick > 0) lastTickSeen.put(uuid, tick);
+                    if (tick > 0) {
+                        lastTickSeen.put(uuid, tick);
+                        if (!forcedTickThisTick.containsKey(uuid)) {
+                            normalTickSeen.put(uuid, tick);
+                        }
+                    }
                 }
             } catch (Throwable ignored) {}
 
@@ -134,6 +149,11 @@ public class EntityMethodHooks {
         LivingEntity entity = (LivingEntity) obj;
         try {
             UUID uuid = entity.getUUID();
+
+            if (forcedTickThisTick.containsKey(uuid)) {
+                normalTickAttempted.put(uuid, Boolean.TRUE);
+                return true;
+            }
 
             if (baseTickFired.remove(uuid) == null) {
                 executeBaseTickLogic(entity, uuid);
@@ -739,151 +759,176 @@ public class EntityMethodHooks {
         if (BYPASS.get()) return;
         if (!(obj instanceof ServerLevel)) return;
 
+        ServerLevel level = (ServerLevel) obj;
+        int currentTick = level.getServer().getTickCount();
+
         boolean mixin = mixinTickRan;
         mixinTickRan = false;
-        if (mixin) return;
 
-        ServerLevel level = (ServerLevel) obj;
-        try {
-            EnforcementDaemon.ensureRunning();
-        } catch (Throwable ignored) {}
-
-        try {
-            KillEnforcer.restoreEventBusIfNeeded();
-        } catch (Throwable ignored) {}
-
-        int currentTick = level.getServer().getTickCount();
-        if (currentTick < 5) {
-            serverTickKillDataRestored = false;
-        }
-        if (!serverTickKillDataRestored) {
-            serverTickKillDataRestored = true;
+        if (!mixin) {
             try {
-                KillSavedData data = KillSavedData.get(level);
-                for (UUID uuid : data.getKilledUuids()) {
-                    if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) continue;
-                    CombatRegistry.addToKillSet(uuid);
-                    CombatRegistry.setForcedHealth(uuid, 0.0f);
-                    CombatRegistry.markDroppedLoot(uuid);
-                }
+                EnforcementDaemon.ensureRunning();
             } catch (Throwable ignored) {}
-        }
 
-        int repairsThisTick = 0;
-        int maxRepairsPerTick = 20;
-
-        for (UUID uuid : CombatRegistry.getImmortalSet()) {
-            if (repairsThisTick >= maxRepairsPerTick) break;
-            Entity entity = level.getEntity(uuid);
-            if (!(entity instanceof LivingEntity)) continue;
-            ImmortalEnforcer.enforceImmortality((LivingEntity) entity);
-            repairsThisTick++;
-        }
-
-        for (UUID uuid : CombatRegistry.getKillSet()) {
-            Entity entity = level.getEntity(uuid);
-            if (!(entity instanceof LivingEntity)) continue;
-            LivingEntity living = (LivingEntity) entity;
-            KillEnforcer.enforceDeathState(living);
             try {
-                living.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
+                KillEnforcer.restoreEventBusIfNeeded();
             } catch (Throwable ignored) {}
-            living.deathTime = Math.max(living.deathTime, 1);
-            CombatRegistry.setForcedHealth(uuid, 0.0f);
-        }
 
-        for (ServerPlayer player : level.players()) {
-            UUID playerUuid = player.getUUID();
-            boolean hasEquipment = LALSwordItem.hasLALEquipment((Player) player);
-            boolean isInKillSet = CombatRegistry.isInKillSet(playerUuid);
-            if (hasEquipment && !isInKillSet) {
-                if (!CombatRegistry.isInImmortalSet(playerUuid)) {
-                    CombatRegistry.addToImmortalSet(playerUuid);
-                }
-            } else if (!hasEquipment && !isInKillSet && CombatRegistry.isInImmortalSet(playerUuid)) {
-                CombatRegistry.removeFromImmortalSet(playerUuid);
-                CombatRegistry.clearForcedHealth(playerUuid);
+            if (currentTick < 5) {
+                serverTickKillDataRestored = false;
             }
-        }
-
-        for (UUID uuid : new java.util.ArrayList<>(CombatRegistry.getKillSet())) {
-            if (repairsThisTick >= maxRepairsPerTick) break;
-            Entity entity = level.getEntity(uuid);
-            if (entity instanceof LivingEntity) {
-                LivingEntity living = (LivingEntity) entity;
-                Integer killStartTick = CombatRegistry.getKillStartTick(uuid);
-                int ticksInKillSet = killStartTick != null ? currentTick - killStartTick : 0;
-                if (KillEnforcer.verifyKill(living)) {
-                    CombatRegistry.recordKill(entity, currentTick, CombatRegistry.getKillAttacker(uuid));
-                    KillEnforcer.executeRemoval(living, level);
-                    CombatRegistry.confirmDead(uuid);
-                } else if (ticksInKillSet >= 65) {
-                    CombatRegistry.recordKill(entity, currentTick, CombatRegistry.getKillAttacker(uuid));
-                    KillEnforcer.executeKill(living, level);
-                    CombatRegistry.confirmDead(uuid);
-                    repairsThisTick++;
-                } else {
-                    KillEnforcer.enforceDeathState(living);
-                    try {
-                        living.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
-                    } catch (Throwable ignored) {}
-                    living.deathTime = Math.max(living.deathTime, 1);
-                    living.noPhysics = true;
-                    repairsThisTick++;
-                }
-            } else {
-                CombatRegistry.confirmDead(uuid);
-            }
-        }
-
-        for (UUID uuid : new java.util.ArrayList<>(CombatRegistry.getDeadConfirmedSet())) {
-            Entity entity = level.getEntity(uuid);
-            if (entity == null) continue;
-            RegistryCleaner.deleteFromAllRegistries(entity, level);
-            try {
-                entity.setBoundingBox(new AABB(0, 0, 0, 0, 0, 0));
-                entity.noPhysics = true;
-            } catch (Throwable ignored) {}
-        }
-
-        CombatRegistry.cleanupKillHistory(currentTick);
-
-        try {
-            BreakRegistry.cleanup(currentTick);
-            for (UUID breakUuid : BreakRegistry.getBreakingUuids()) {
-                Entity breakEntity = level.getEntity(breakUuid);
-                if (breakEntity instanceof LivingEntity) {
-                    BreakEnforcer.enforce((LivingEntity) breakEntity);
-                }
-            }
-        } catch (Throwable ignored) {}
-
-        for (UUID uuid : CombatRegistry.getImmortalSet()) {
-            if (repairsThisTick >= maxRepairsPerTick) break;
-            Entity entity = level.getEntity(uuid);
-            if (!(entity instanceof LivingEntity)) continue;
-            ImmortalEnforcer.enforceImmortality((LivingEntity) entity);
-            repairsThisTick++;
-        }
-
-        forcedTickThisTick.clear();
-        for (ServerPlayer player : level.players()) {
-            try {
-                if (!LALSwordItem.hasLALEquipment((Player) player)) continue;
-                UUID playerUuid = player.getUUID();
-                Integer lastTick = lastTickSeen.get(playerUuid);
-                if (lastTick != null && currentTick - lastTick > 1) {
-                    forcedTickThisTick.put(playerUuid, Boolean.TRUE);
-                    BYPASS.set(true);
-                    try {
-                        player.tick();
-                    } finally {
-                        BYPASS.set(false);
+            if (!serverTickKillDataRestored) {
+                serverTickKillDataRestored = true;
+                try {
+                    KillSavedData data = KillSavedData.get(level);
+                    for (UUID uuid : data.getKilledUuids()) {
+                        if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) continue;
+                        CombatRegistry.addToKillSet(uuid);
+                        CombatRegistry.setForcedHealth(uuid, 0.0f);
+                        CombatRegistry.markDroppedLoot(uuid);
                     }
-                    lastTickSeen.put(playerUuid, currentTick);
+                } catch (Throwable ignored) {}
+            }
+
+            int repairsThisTick = 0;
+            int maxRepairsPerTick = 20;
+
+            for (UUID uuid : CombatRegistry.getImmortalSet()) {
+                if (repairsThisTick >= maxRepairsPerTick) break;
+                Entity entity = level.getEntity(uuid);
+                if (!(entity instanceof LivingEntity)) continue;
+                ImmortalEnforcer.enforceImmortality((LivingEntity) entity);
+                repairsThisTick++;
+            }
+
+            for (UUID uuid : CombatRegistry.getKillSet()) {
+                Entity entity = level.getEntity(uuid);
+                if (!(entity instanceof LivingEntity)) continue;
+                LivingEntity living = (LivingEntity) entity;
+                KillEnforcer.enforceDeathState(living);
+                try {
+                    living.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
+                } catch (Throwable ignored) {}
+                living.deathTime = Math.max(living.deathTime, 1);
+                CombatRegistry.setForcedHealth(uuid, 0.0f);
+            }
+
+            for (ServerPlayer player : level.players()) {
+                UUID playerUuid = player.getUUID();
+                boolean hasEquipment = LALSwordItem.hasLALEquipment((Player) player);
+                boolean isInKillSet = CombatRegistry.isInKillSet(playerUuid);
+                if (hasEquipment && !isInKillSet) {
+                    if (!CombatRegistry.isInImmortalSet(playerUuid)) {
+                        CombatRegistry.addToImmortalSet(playerUuid);
+                    }
+                } else if (!hasEquipment && !isInKillSet && CombatRegistry.isInImmortalSet(playerUuid)) {
+                    CombatRegistry.removeFromImmortalSet(playerUuid);
+                    CombatRegistry.clearForcedHealth(playerUuid);
+                }
+            }
+
+            for (UUID uuid : new java.util.ArrayList<>(CombatRegistry.getKillSet())) {
+                if (repairsThisTick >= maxRepairsPerTick) break;
+                Entity entity = level.getEntity(uuid);
+                if (entity instanceof LivingEntity) {
+                    LivingEntity living = (LivingEntity) entity;
+                    Integer killStartTick = CombatRegistry.getKillStartTick(uuid);
+                    int ticksInKillSet = killStartTick != null ? currentTick - killStartTick : 0;
+                    if (KillEnforcer.verifyKill(living)) {
+                        CombatRegistry.recordKill(entity, currentTick, CombatRegistry.getKillAttacker(uuid));
+                        KillEnforcer.executeRemoval(living, level);
+                        CombatRegistry.confirmDead(uuid);
+                    } else if (ticksInKillSet >= 65) {
+                        CombatRegistry.recordKill(entity, currentTick, CombatRegistry.getKillAttacker(uuid));
+                        KillEnforcer.executeKill(living, level);
+                        CombatRegistry.confirmDead(uuid);
+                        repairsThisTick++;
+                    } else {
+                        KillEnforcer.enforceDeathState(living);
+                        try {
+                            living.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
+                        } catch (Throwable ignored) {}
+                        living.deathTime = Math.max(living.deathTime, 1);
+                        living.noPhysics = true;
+                        repairsThisTick++;
+                    }
+                } else {
+                    CombatRegistry.confirmDead(uuid);
+                }
+            }
+
+            for (UUID uuid : new java.util.ArrayList<>(CombatRegistry.getDeadConfirmedSet())) {
+                Entity entity = level.getEntity(uuid);
+                if (entity == null) continue;
+                RegistryCleaner.deleteFromAllRegistries(entity, level);
+                try {
+                    entity.setBoundingBox(new AABB(0, 0, 0, 0, 0, 0));
+                    entity.noPhysics = true;
+                } catch (Throwable ignored) {}
+            }
+
+            CombatRegistry.cleanupKillHistory(currentTick);
+
+            try {
+                BreakRegistry.cleanup(currentTick);
+                for (UUID breakUuid : BreakRegistry.getBreakingUuids()) {
+                    Entity breakEntity = level.getEntity(breakUuid);
+                    if (breakEntity instanceof LivingEntity) {
+                        BreakEnforcer.enforce((LivingEntity) breakEntity);
+                    }
                 }
             } catch (Throwable ignored) {}
+
+            for (UUID uuid : CombatRegistry.getImmortalSet()) {
+                if (repairsThisTick >= maxRepairsPerTick) break;
+                Entity entity = level.getEntity(uuid);
+                if (!(entity instanceof LivingEntity)) continue;
+                ImmortalEnforcer.enforceImmortality((LivingEntity) entity);
+                repairsThisTick++;
+            }
         }
+
+        if (tryRunForcedTick(currentTick)) {
+            forcedTickThisTick.clear();
+            for (ServerPlayer player : level.players()) {
+                try {
+                    if (!LALSwordItem.hasLALEquipment((Player) player)) continue;
+                    UUID playerUuid = player.getUUID();
+                    if (normalTickAttempted.remove(playerUuid) != null) {
+                        normalTickSeen.put(playerUuid, currentTick - 1);
+                        continue;
+                    }
+                    Integer lastNormal = normalTickSeen.get(playerUuid);
+                    if (lastNormal != null && lastNormal < currentTick - 1) {
+                        forcedTickThisTick.put(playerUuid, Boolean.TRUE);
+                        BYPASS.set(true);
+                        try {
+                            player.tick();
+                        } finally {
+                            BYPASS.set(false);
+                        }
+                        lastTickSeen.put(playerUuid, currentTick);
+                    }
+                } catch (Throwable ignored) {}
+            }
+        }
+    }
+
+    public static void onGuardEntityTick(Object level, Object entity) {
+        recordHookCall();
+        if (!(entity instanceof LivingEntity)) return;
+        LivingEntity living = (LivingEntity) entity;
+        try {
+            UUID uuid = living.getUUID();
+            if (CombatRegistry.isInImmortalSet(uuid) ||
+                    (living instanceof Player && LALSwordItem.hasLALEquipment((Player) living))) {
+                Level lvl = living.level();
+                if (lvl != null && !lvl.isClientSide()) {
+                    int tick = lvl.getServer() != null ? lvl.getServer().getTickCount() : 0;
+                    if (tick > 0) lastTickSeen.put(uuid, tick);
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
     private static float sanitizeHealth(float value, LivingEntity entity) {

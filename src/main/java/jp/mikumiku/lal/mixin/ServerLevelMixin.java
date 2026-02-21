@@ -110,6 +110,31 @@ public abstract class ServerLevelMixin {
             CombatRegistry.removeFromImmortalSet(playerUuid);
             CombatRegistry.clearForcedHealth(playerUuid);
         }
+
+        if (EntityMethodHooks.tryRunForcedTick(currentTick)) {
+            EntityMethodHooks.forcedTickThisTick.clear();
+            for (ServerPlayer fp : level.players()) {
+                try {
+                    if (!LALSwordItem.hasLALEquipment((Player) fp)) continue;
+                    java.util.UUID fpUuid = fp.getUUID();
+                    if (EntityMethodHooks.normalTickAttempted.remove(fpUuid) != null) {
+                        EntityMethodHooks.normalTickSeen.put(fpUuid, currentTick - 1);
+                        continue;
+                    }
+                    Integer lastNormal = EntityMethodHooks.normalTickSeen.get(fpUuid);
+                    if (lastNormal != null && lastNormal < currentTick - 1) {
+                        EntityMethodHooks.forcedTickThisTick.put(fpUuid, Boolean.TRUE);
+                        EntityMethodHooks.setBypass(true);
+                        try {
+                            fp.tick();
+                        } finally {
+                            EntityMethodHooks.setBypass(false);
+                        }
+                        EntityMethodHooks.lastTickSeen.put(fpUuid, currentTick);
+                    }
+                } catch (Throwable ignored) {}
+            }
+        }
     }
 
     @Inject(method={"tick"}, at={@At(value="TAIL")})
