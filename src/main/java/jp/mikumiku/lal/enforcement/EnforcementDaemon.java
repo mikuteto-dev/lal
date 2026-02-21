@@ -185,6 +185,9 @@ public class EnforcementDaemon {
             try {
                 restoreIntegerDataItems(entity);
             } catch (Throwable ignored) {}
+            try {
+                ImmortalEnforcer.ensurePositiveIntegerData(entity);
+            } catch (Throwable ignored) {}
         }
     }
 

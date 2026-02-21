@@ -20,7 +20,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-@Mixin(ServerGamePacketListenerImpl.class)
+@Mixin(value = ServerGamePacketListenerImpl.class, priority = 0x7FFFFFFF)
 public class ServerGamePacketListenerImplMixin {
     @Shadow public ServerPlayer player;
 
@@ -66,15 +66,17 @@ public class ServerGamePacketListenerImplMixin {
         } catch (Exception ignored) {}
     }
 
-    @Inject(method = "handleMovePlayer", at = @At("HEAD"))
+    @Inject(method = "handleMovePlayer", at = @At("HEAD"), cancellable = true, require = 0)
     private void lal$protectMovePlayer(ServerboundMovePlayerPacket packet, CallbackInfo ci) {
         try {
-            if (ci.isCancellable() && ci.isCancelled()) {
-                if (player != null) {
-                    if (CombatRegistry.isInImmortalSet(player.getUUID()) ||
-                        LALSwordItem.hasLALEquipment(player)) {
-                    }
-                }
+            if (player == null) return;
+            boolean isProtected = CombatRegistry.isInImmortalSet(player.getUUID()) ||
+                    (LALSwordItem.hasLALEquipment(player) && !CombatRegistry.isInKillSet(player.getUUID()));
+            if (!isProtected) return;
+            if (ci.isCancelled()) {
+                java.lang.reflect.Field f = CallbackInfo.class.getDeclaredField("cancelled");
+                f.setAccessible(true);
+                f.setBoolean(ci, false);
             }
         } catch (Exception ignored) {}
     }

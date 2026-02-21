@@ -5,6 +5,7 @@ import java.util.UUID;
 import jp.mikumiku.lal.core.CombatRegistry;
 import jp.mikumiku.lal.item.LALSwordItem;
 import jp.mikumiku.lal.transformer.EntityMethodHooks;
+import net.minecraft.sounds.SoundEvent;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Pose;
@@ -324,6 +325,15 @@ public abstract class EntityMixin {
         Entity self = (Entity)(Object)this;
         if (CombatRegistry.isInImmortalSet(self)) {
             cir.setReturnValue(true);
+        }
+    }
+
+    @Inject(method={"playSound(Lnet/minecraft/sounds/SoundEvent;FF)V"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$blockKillSetSound(SoundEvent sound, float volume, float pitch, CallbackInfo ci) {
+        Entity self = (Entity)(Object)this;
+        UUID uuid = self.getUUID();
+        if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) {
+            ci.cancel();
         }
     }
 }

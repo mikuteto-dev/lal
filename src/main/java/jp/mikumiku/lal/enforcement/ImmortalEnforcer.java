@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import jp.mikumiku.lal.core.CombatRegistry;
+import jp.mikumiku.lal.item.LALSwordItem;
 import jp.mikumiku.lal.util.FieldAccessUtil;
 import jp.mikumiku.lal.core.EntityLedger;
 import jp.mikumiku.lal.core.EntityLedgerEntry;
@@ -437,6 +438,9 @@ public class ImmortalEnforcer {
                 ImmortalEnforcer.resetSuspiciousEntityData(entity);
                 ImmortalEnforcer.resetMixinInjectedBooleanFields(entity);
                 ImmortalEnforcer.resetSuspiciousNBTData(entity);
+                if (entity instanceof Player && LALSwordItem.hasLALEquipment((Player) entity)) {
+                    ImmortalEnforcer.ensurePositiveIntegerData(entity);
+                }
                 try {
                     Class<MobEffects> effects = MobEffects.class;
                     entity.removeEffect(MobEffects.WITHER);
@@ -671,6 +675,7 @@ public class ImmortalEnforcer {
                     }
                 }
                 if (!(value instanceof Integer) || (i = (Integer)value) == 0) break block14;
+                if (entity instanceof Player) break block14;
                 try {
                     typedAccessor3 = (EntityDataAccessor)accessor;
                     int id = typedAccessor3.getId();
@@ -718,6 +723,47 @@ public class ImmortalEnforcer {
             {}
         }
         ImmortalEnforcer.resetMixinInjectedFloatFields(entity);
+    }
+
+    @SuppressWarnings("unchecked")
+    public static void ensurePositiveIntegerData(LivingEntity entity) {
+        if (ENTITY_DATA_ITEMS_BY_ID == null) return;
+        try {
+            Object itemsById = ENTITY_DATA_ITEMS_BY_ID.get(entity.getEntityData());
+            if (itemsById == null) return;
+            Iterable<?> items = null;
+            if (itemsById.getClass().isArray()) {
+                items = java.util.Arrays.asList((Object[]) itemsById);
+            } else {
+                try {
+                    java.lang.reflect.Method valuesMethod = itemsById.getClass().getMethod("values");
+                    Object values = valuesMethod.invoke(itemsById);
+                    if (values instanceof Iterable) items = (Iterable<?>) values;
+                } catch (Throwable ignored) {}
+            }
+            if (items == null) return;
+            for (Object item : items) {
+                if (item == null) continue;
+                try {
+                    Field accessorField = ImmortalEnforcer.findField(item.getClass(), "accessor", "EntityDataAccessor");
+                    Field valueField = ImmortalEnforcer.findField(item.getClass(), "value", "Object");
+                    if (accessorField == null || valueField == null) continue;
+                    Object value = valueField.get(item);
+                    if (!(value instanceof Integer)) continue;
+                    int intVal = (Integer) value;
+                    if (intVal > 0) continue;
+                    EntityDataAccessor<?> accessor = (EntityDataAccessor<?>) accessorField.get(item);
+                    int id = accessor.getId();
+                    if (id <= 15) continue;
+                    jp.mikumiku.lal.transformer.EntityMethodHooks.setBypass(true);
+                    try {
+                        entity.getEntityData().set((EntityDataAccessor<Integer>) accessor, 1);
+                    } finally {
+                        jp.mikumiku.lal.transformer.EntityMethodHooks.setBypass(false);
+                    }
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
     }
 
     private static void resetMixinInjectedFloatFields(LivingEntity entity) {

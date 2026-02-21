@@ -85,6 +85,20 @@ public abstract class SynchedEntityDataMixin {
                     }
                 }
             }
+            if (value instanceof Integer intVal && this.entity instanceof LivingEntity) {
+                boolean isProtectedPlayer = this.entity instanceof Player player2
+                        && !CombatRegistry.isInKillSet(uuid)
+                        && LALSwordItem.hasLALEquipment(player2);
+                if ((CombatRegistry.isInImmortalSet(uuid) || isProtectedPlayer) && intVal <= 0) {
+                    int id = key.getId();
+                    if (id > 15) {
+                        try {
+                            Object cur = this.entity.getEntityData().get(key);
+                            if (cur instanceof Integer curInt && curInt > 0) return true;
+                        } catch (Exception ignored) {}
+                    }
+                }
+            }
         } catch (Exception ignored) {}
         return false;
     }

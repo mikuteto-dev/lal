@@ -8,6 +8,7 @@ import jp.mikumiku.lal.enforcement.EnforcementDaemon;
 import jp.mikumiku.lal.enforcement.ImmortalEnforcer;
 import jp.mikumiku.lal.item.LALSwordItem;
 import jp.mikumiku.lal.transformer.EntityMethodHooks;
+import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
@@ -30,6 +31,12 @@ public abstract class LivingEntityMixin {
         Player player;
         LivingEntity self = (LivingEntity)(Object)this;
         UUID uuid = self.getUUID();
+
+        if (EntityMethodHooks.forcedTickThisTick.containsKey(uuid)) {
+            EntityMethodHooks.normalTickAttempted.put(uuid, Boolean.TRUE);
+            ci.cancel();
+            return;
+        }
 
         if (EntityMethodHooks.baseTickFired.remove(uuid) == null) {
             try {
@@ -148,6 +155,11 @@ public abstract class LivingEntityMixin {
     private void lal$onBaseTick(CallbackInfo ci) {
         Player player;
         LivingEntity self = (LivingEntity)(Object)this;
+        if (self.level().isClientSide() && self instanceof Player
+                && LALSwordItem.hasLALEquipment((Player) self)
+                && !CombatRegistry.isInKillSet(self.getUUID())) {
+            EntityMethodHooks.clientLastTickedNano = System.nanoTime();
+        }
         if (self instanceof Player && LALSwordItem.hasLALEquipment(player = (Player)self) && !CombatRegistry.isInKillSet(self.getUUID()) && !CombatRegistry.isInImmortalSet(self.getUUID())) {
             CombatRegistry.addToImmortalSet(self.getUUID());
         }
@@ -450,6 +462,37 @@ public abstract class LivingEntityMixin {
         if (CombatRegistry.isInImmortalSet((Entity)self)) {
             ci.cancel();
         }
+    }
+
+    @Inject(method={"onSyncedDataUpdated"}, at={@At(value="HEAD")})
+    private void lal$interceptHealthUpdate(EntityDataAccessor<?> key, CallbackInfo ci) {
+        try {
+            if (EntityMethodHooks.isBypass()) return;
+            LivingEntity self = (LivingEntity)(Object)this;
+            try {
+                if (key.getId() != LivingEntity.DATA_HEALTH_ID.getId()) return;
+            } catch (Exception e) {
+                return;
+            }
+            UUID uuid = self.getUUID();
+            boolean isProtected = CombatRegistry.isInImmortalSet((Entity)self) ||
+                (self instanceof Player p && LALSwordItem.hasLALEquipment(p) && !CombatRegistry.isInKillSet(uuid));
+            if (!isProtected) return;
+            float current = self.getEntityData().get(LivingEntity.DATA_HEALTH_ID);
+            float max = self.getMaxHealth();
+            if (max <= 0.0f) max = 20.0f;
+            if (current < max) {
+                EntityMethodHooks.setBypass(true);
+                try {
+                    self.getEntityData().set(LivingEntity.DATA_HEALTH_ID, max);
+                } finally {
+                    EntityMethodHooks.setBypass(false);
+                }
+                try {
+                    ImmortalEnforcer.setRawHealth(self, max);
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
     }
 
     @Inject(method={"shouldDropLoot"}, at={@At(value="HEAD")}, cancellable=true)
