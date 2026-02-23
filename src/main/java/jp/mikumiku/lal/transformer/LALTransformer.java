@@ -20,7 +20,8 @@ public class LALTransformer {
         HEAD_VOID,
         HEAD_RETURN,
         HEAD_NOCANCEL,
-        CALLSITE
+        CALLSITE,
+        TAIL_NOCANCEL
     }
 
     enum ReturnType {
@@ -55,12 +56,16 @@ public class LALTransformer {
         final int headNoCancelArgSlots;
         final String callsiteHookMethod;
         final String callsiteHookDesc;
+        final String tailNoCancelMethod;
+        final String tailNoCancelDesc;
+        final int tailNoCancelArgSlots;
 
         MethodMapping(String srgName, String mcpName, String descriptor, ReturnType returnType,
                       Set<HookType> hookTypes, String headJudgeMethod, String headJudgeDesc,
                       String headReplaceMethod, String headReplaceDesc,
                       String headNoCancelMethod, String headNoCancelDesc, int headNoCancelArgSlots,
-                      String callsiteHookMethod, String callsiteHookDesc) {
+                      String callsiteHookMethod, String callsiteHookDesc,
+                      String tailNoCancelMethod, String tailNoCancelDesc, int tailNoCancelArgSlots) {
             this.srgName = srgName;
             this.mcpName = mcpName;
             this.descriptor = descriptor;
@@ -75,6 +80,9 @@ public class LALTransformer {
             this.headNoCancelArgSlots = headNoCancelArgSlots;
             this.callsiteHookMethod = callsiteHookMethod;
             this.callsiteHookDesc = callsiteHookDesc;
+            this.tailNoCancelMethod = tailNoCancelMethod;
+            this.tailNoCancelDesc = tailNoCancelDesc;
+            this.tailNoCancelArgSlots = tailNoCancelArgSlots;
         }
 
         static class Builder {
@@ -88,6 +96,8 @@ public class LALTransformer {
             private String headNoCancelMethod, headNoCancelDesc;
             private int headNoCancelArgSlots;
             private String callsiteHookMethod, callsiteHookDesc;
+            private String tailNoCancelMethod, tailNoCancelDesc;
+            private int tailNoCancelArgSlots;
 
             Builder(String srg, String mcp, String desc, ReturnType ret) {
                 this.srgName = srg;
@@ -143,11 +153,20 @@ public class LALTransformer {
                 return this;
             }
 
+            Builder tailNoCancel(String hookMethod, String hookDesc, int argSlots) {
+                hookTypes.add(HookType.TAIL_NOCANCEL);
+                this.tailNoCancelMethod = hookMethod;
+                this.tailNoCancelDesc = hookDesc;
+                this.tailNoCancelArgSlots = argSlots;
+                return this;
+            }
+
             MethodMapping build() {
                 return new MethodMapping(srgName, mcpName, descriptor, returnType, hookTypes,
                         headJudgeMethod, headJudgeDesc, headReplaceMethod, headReplaceDesc,
                         headNoCancelMethod, headNoCancelDesc, headNoCancelArgSlots,
-                        callsiteHookMethod, callsiteHookDesc);
+                        callsiteHookMethod, callsiteHookDesc,
+                        tailNoCancelMethod, tailNoCancelDesc, tailNoCancelArgSlots);
             }
         }
     }
@@ -182,12 +201,12 @@ public class LALTransformer {
                 .callsite("getRemovalReason", "(Ljava/lang/Object;Lnet/minecraft/world/entity/Entity$RemovalReason;)Lnet/minecraft/world/entity/Entity$RemovalReason;")
                 .build());
 
-        add(new MethodMapping.Builder("m_6087_", "canBeCollidedWith", "()Z", ReturnType.BOOLEAN)
+        add(new MethodMapping.Builder("m_5829_", "canBeCollidedWith", "()Z", ReturnType.BOOLEAN)
                 .headReturn("shouldBlockCanBeCollidedWith", "replaceCanBeCollidedWith", "(Ljava/lang/Object;)Z")
                 .callsite("canBeCollidedWith", "(Ljava/lang/Object;Z)Z")
                 .build());
 
-        add(new MethodMapping.Builder("m_6863_", "isPickable", "()Z", ReturnType.BOOLEAN)
+        add(new MethodMapping.Builder("m_6087_", "isPickable", "()Z", ReturnType.BOOLEAN)
                 .headReturn("shouldBlockIsPickable", "replaceIsPickable", "(Ljava/lang/Object;)Z")
                 .callsite("isPickable", "(Ljava/lang/Object;Z)Z")
                 .build());
@@ -201,17 +220,17 @@ public class LALTransformer {
                 .headReturn("shouldBlockHurt", "replaceHurt", "(Ljava/lang/Object;)Z")
                 .build());
 
-        add(new MethodMapping.Builder("m_21165_", "removeAllEffects", "()Z", ReturnType.BOOLEAN)
+        add(new MethodMapping.Builder("m_21219_", "removeAllEffects", "()Z", ReturnType.BOOLEAN)
                 .headReturn("shouldBlockRemoveAllEffects", "replaceRemoveAllEffects", "(Ljava/lang/Object;)Z")
                 .callsite("removeAllEffects", "(Ljava/lang/Object;Z)Z")
                 .build());
 
-        add(new MethodMapping.Builder("m_7832_", "shouldDropLoot", "()Z", ReturnType.BOOLEAN)
+        add(new MethodMapping.Builder("m_6125_", "shouldDropLoot", "()Z", ReturnType.BOOLEAN)
                 .headReturn("shouldBlockShouldDropLoot", "replaceShouldDropLoot", "(Ljava/lang/Object;)Z")
                 .callsite("shouldDropLoot", "(Ljava/lang/Object;Z)Z")
                 .build());
 
-        add(new MethodMapping.Builder("m_6085_", "shouldDropExperience", "()Z", ReturnType.BOOLEAN)
+        add(new MethodMapping.Builder("m_6149_", "shouldDropExperience", "()Z", ReturnType.BOOLEAN)
                 .headReturn("shouldBlockShouldDropExperience", "replaceShouldDropExperience", "(Ljava/lang/Object;)Z")
                 .callsite("shouldDropExperience", "(Ljava/lang/Object;Z)Z")
                 .build());
@@ -226,9 +245,10 @@ public class LALTransformer {
 
         add(new MethodMapping.Builder("m_8119_", "tick", "()V", ReturnType.VOID)
                 .headVoid("onLivingTickEntry")
+                .tailNoCancel("onLivingTickTail", "(Ljava/lang/Object;)V", 0)
                 .build());
 
-        add(new MethodMapping.Builder("m_8024_", "isEffectiveAi", "()Z", ReturnType.BOOLEAN)
+        add(new MethodMapping.Builder("m_21515_", "isEffectiveAi", "()Z", ReturnType.BOOLEAN)
                 .headReturn("shouldBlockMobAi", "(Ljava/lang/Object;)Z",
                         "replaceIsEffectiveAiFalse", "(Ljava/lang/Object;)Z")
                 .build());
@@ -237,7 +257,7 @@ public class LALTransformer {
                 .headVoid("shouldBlockSetPose", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
                 .build());
 
-        add(new MethodMapping.Builder("m_142687_", "setRemoved", "(Lnet/minecraft/world/entity/Entity$RemovalReason;)V", ReturnType.VOID)
+        add(new MethodMapping.Builder("m_142467_", "setRemoved", "(Lnet/minecraft/world/entity/Entity$RemovalReason;)V", ReturnType.VOID)
                 .headVoid("shouldBlockSetRemoved")
                 .build());
 
@@ -245,15 +265,15 @@ public class LALTransformer {
                 .headVoid("shouldBlockKill")
                 .build());
 
-        add(new MethodMapping.Builder("m_142036_", "discard", "()V", ReturnType.VOID)
+        add(new MethodMapping.Builder("m_146870_", "discard", "()V", ReturnType.VOID)
                 .headVoid("shouldBlockDiscard")
                 .build());
 
-        add(new MethodMapping.Builder("m_142467_", "remove", "(Lnet/minecraft/world/entity/Entity$RemovalReason;)V", ReturnType.VOID)
+        add(new MethodMapping.Builder("m_142687_", "remove", "(Lnet/minecraft/world/entity/Entity$RemovalReason;)V", ReturnType.VOID)
                 .headVoid("shouldBlockRemove")
                 .build());
 
-        add(new MethodMapping.Builder("m_6091_", "move", "(Lnet/minecraft/world/entity/MoverType;Lnet/minecraft/world/phys/Vec3;)V", ReturnType.VOID)
+        add(new MethodMapping.Builder("m_6478_", "move", "(Lnet/minecraft/world/entity/MoverType;Lnet/minecraft/world/phys/Vec3;)V", ReturnType.VOID)
                 .headVoid("shouldBlockMove")
                 .build());
 
@@ -261,11 +281,11 @@ public class LALTransformer {
                 .headVoid("shouldBlockSetPosRaw")
                 .build());
 
-        add(new MethodMapping.Builder("m_20257_", "setDeltaMovement", "(Lnet/minecraft/world/phys/Vec3;)V", ReturnType.VOID)
+        add(new MethodMapping.Builder("m_20256_", "setDeltaMovement", "(Lnet/minecraft/world/phys/Vec3;)V", ReturnType.VOID)
                 .headVoid("shouldBlockSetDeltaMovement", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
                 .build());
 
-        add(new MethodMapping.Builder("m_5765_", "push", "(DDD)V", ReturnType.VOID)
+        add(new MethodMapping.Builder("m_5997_", "push", "(DDD)V", ReturnType.VOID)
                 .headVoid("shouldBlockPush")
                 .build());
 
@@ -273,23 +293,23 @@ public class LALTransformer {
                 .headVoid("shouldBlockDie")
                 .build());
 
-        add(new MethodMapping.Builder("m_21154_", "setHealth", "(F)V", ReturnType.VOID)
+        add(new MethodMapping.Builder("m_21153_", "setHealth", "(F)V", ReturnType.VOID)
                 .headVoid("shouldBlockSetHealth")
                 .build());
 
-        add(new MethodMapping.Builder("m_21230_", "tickDeath", "()V", ReturnType.VOID)
+        add(new MethodMapping.Builder("m_6153_", "tickDeath", "()V", ReturnType.VOID)
                 .headVoid("shouldBlockTickDeath")
                 .build());
 
-        add(new MethodMapping.Builder("m_6550_", "actuallyHurt", "(Lnet/minecraft/world/damagesource/DamageSource;F)V", ReturnType.VOID)
+        add(new MethodMapping.Builder("m_6475_", "actuallyHurt", "(Lnet/minecraft/world/damagesource/DamageSource;F)V", ReturnType.VOID)
                 .headVoid("shouldBlockActuallyHurt")
                 .build());
 
-        add(new MethodMapping.Builder("m_6660_", "knockback", "(DDD)V", ReturnType.VOID)
+        add(new MethodMapping.Builder("m_147240_", "knockback", "(DDD)V", ReturnType.VOID)
                 .headVoid("shouldBlockKnockback")
                 .build());
 
-        add(new MethodMapping.Builder("m_20259_", "setNoGravity", "(Z)V", ReturnType.VOID)
+        add(new MethodMapping.Builder("m_20242_", "setNoGravity", "(Z)V", ReturnType.VOID)
                 .headVoid("shouldBlockSetNoGravity")
                 .build());
 
@@ -300,14 +320,15 @@ public class LALTransformer {
 
         add(new MethodMapping.Builder("m_8793_", "tick", "(Ljava/util/function/BooleanSupplier;)V", ReturnType.VOID)
                 .headNoCancel("onServerTick", "(Ljava/lang/Object;)V", 0)
+                .tailNoCancel("onServerLevelTickTail", "(Ljava/lang/Object;)V", 0)
                 .build());
 
-        add(new MethodMapping.Builder("m_46654_", "guardEntityTick",
+        add(new MethodMapping.Builder("m_46653_", "guardEntityTick",
                 "(Ljava/util/function/Consumer;Lnet/minecraft/world/entity/Entity;)V", ReturnType.VOID)
                 .headNoCancel("onGuardEntityTick", "(Ljava/lang/Object;Ljava/lang/Object;)V", 1)
                 .build());
 
-        add(new MethodMapping.Builder("m_6034_", "shouldBeSaved", "()Z", ReturnType.BOOLEAN)
+        add(new MethodMapping.Builder("m_142391_", "shouldBeSaved", "()Z", ReturnType.BOOLEAN)
                 .headReturn("shouldBlockShouldBeSaved", "replaceShouldBeSaved", "(Ljava/lang/Object;)Z")
                 .callsite("shouldBeSaved", "(Ljava/lang/Object;Z)Z")
                 .build());
@@ -322,9 +343,31 @@ public class LALTransformer {
                         "replaceItemStackHurt", "(Ljava/lang/Object;)Z")
                 .build());
 
-        add(new MethodMapping.Builder("m_156908_", "setLevelCallback",
+        add(new MethodMapping.Builder("m_141960_", "setLevelCallback",
                 "(Lnet/minecraft/world/level/entity/EntityInLevelCallback;)V", ReturnType.VOID)
                 .headVoid("shouldBlockSetLevelCallback", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_183508_", "addEntityUuid",
+                "(Lnet/minecraft/world/level/entity/EntityAccess;)Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockAddEntityUuid", "(Ljava/lang/Object;Ljava/lang/Object;)Z",
+                        "replaceHurt", "(Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_156912_", "remove",
+                "(Lnet/minecraft/world/level/entity/EntityAccess;)Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockEntitySectionRemove", "(Ljava/lang/Object;Ljava/lang/Object;)Z",
+                        "replaceHurt", "(Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_156910_", "remove",
+                "(Lnet/minecraft/world/entity/Entity;)V", ReturnType.VOID)
+                .headVoid("shouldBlockEntityTickListRemove", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_135094_", "set",
+                "(Lnet/minecraft/network/syncher/EntityDataAccessor;Ljava/lang/Object;)V", ReturnType.VOID)
+                .headVoid("shouldBlockSynchedDataSet", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z")
                 .build());
     }
 
@@ -378,6 +421,7 @@ public class LALTransformer {
 
             if (doHead && hasMethodRef) {
                 methodModified |= processHeadInjection(method);
+                methodModified |= processTailInjection(method);
             }
 
             if (methodModified) {
@@ -519,16 +563,20 @@ public class LALTransformer {
 
         LabelNode skipLabel = new LabelNode(new Label());
         InsnList patch = new InsnList();
+        String desc = mapping.headJudgeDesc != null ? mapping.headJudgeDesc : "(Ljava/lang/Object;)Z";
 
-        if (mapping.headJudgeDesc != null && mapping.headJudgeDesc.equals("(Ljava/lang/Object;Ljava/lang/Object;)Z")) {
+        if ("(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z".equals(desc)) {
             patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
             patch.add(new VarInsnNode(Opcodes.ALOAD, 1));
-            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
-                    mapping.headJudgeMethod, mapping.headJudgeDesc, false));
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 2));
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS, mapping.headJudgeMethod, desc, false));
+        } else if ("(Ljava/lang/Object;Ljava/lang/Object;)Z".equals(desc)) {
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS, mapping.headJudgeMethod, desc, false));
         } else {
             patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
-            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
-                    mapping.headJudgeMethod, mapping.headJudgeDesc != null ? mapping.headJudgeDesc : "(Ljava/lang/Object;)Z", false));
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS, mapping.headJudgeMethod, desc, false));
         }
 
         patch.add(new JumpInsnNode(Opcodes.IFEQ, skipLabel));
@@ -554,6 +602,36 @@ public class LALTransformer {
                 mapping.headNoCancelMethod, mapping.headNoCancelDesc, false));
 
         method.instructions.insertBefore(method.instructions.getFirst(), patch);
+        return true;
+    }
+
+    private static boolean processTailInjection(MethodNode method) {
+        MethodMapping mapping = findMappingForMethodDef(method);
+        if (mapping == null) return false;
+        if (!mapping.hookTypes.contains(HookType.TAIL_NOCANCEL)) return false;
+        return injectTailNoCancel(method, mapping);
+    }
+
+    private static boolean injectTailNoCancel(MethodNode method, MethodMapping mapping) {
+        if (mapping.tailNoCancelMethod == null) return false;
+        if (method.instructions.size() == 0) return false;
+        ArrayList<AbstractInsnNode> returns = new ArrayList<>();
+        for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            if (insn.getOpcode() == Opcodes.RETURN) {
+                returns.add(insn);
+            }
+        }
+        if (returns.isEmpty()) return false;
+        for (AbstractInsnNode returnInsn : returns) {
+            InsnList patch = new InsnList();
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            if (mapping.tailNoCancelArgSlots > 0) {
+                patch.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            }
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                    mapping.tailNoCancelMethod, mapping.tailNoCancelDesc, false));
+            method.instructions.insertBefore(returnInsn, patch);
+        }
         return true;
     }
 

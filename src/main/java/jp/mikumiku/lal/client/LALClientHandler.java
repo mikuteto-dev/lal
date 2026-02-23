@@ -65,12 +65,20 @@ public class LALClientHandler {
             player.noPhysics = false;
             player.setNoGravity(false);
         }
+
+        boolean hasEquipment = LALSwordItem.hasLALEquipment((Player) player);
+        if (boostMode && !hasEquipment) {
+            boostMode = false;
+            player.displayClientMessage(Component.literal("[LAL] Boost Mode: OFF"), true);
+        }
         while (BOOST_KEY.consumeClick()) {
-            boostMode = !boostMode;
-            if (boostMode) {
-                player.displayClientMessage(Component.literal("[LAL] Boost Mode: ON"), true);
-            } else {
-                player.displayClientMessage(Component.literal("[LAL] Boost Mode: OFF"), true);
+            if (hasEquipment) {
+                boostMode = !boostMode;
+                if (boostMode) {
+                    player.displayClientMessage(Component.literal("[LAL] Boost Mode: ON"), true);
+                } else {
+                    player.displayClientMessage(Component.literal("[LAL] Boost Mode: OFF"), true);
+                }
             }
         }
         if (boostMode) {

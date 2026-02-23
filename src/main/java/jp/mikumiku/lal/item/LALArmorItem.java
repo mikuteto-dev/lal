@@ -3,6 +3,7 @@ package jp.mikumiku.lal.item;
 import jp.mikumiku.lal.core.CombatRegistry;
 import jp.mikumiku.lal.core.LifePolicyEngine;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ArmorItem;
 import net.minecraft.world.item.ArmorMaterial;
@@ -53,6 +54,11 @@ extends ArmorItem {
 
     public boolean isFoil(ItemStack stack) {
         return true;
+    }
+
+    @Override
+    public String getArmorTexture(ItemStack stack, Entity entity, EquipmentSlot slot, String type) {
+        return "minecraft:textures/models/armor/lal_layer_" + (slot == EquipmentSlot.LEGS ? "2" : "1") + ".png";
     }
 
     public static void checkAndRemoveImmortality(Player player) {

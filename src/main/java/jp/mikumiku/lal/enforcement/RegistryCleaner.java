@@ -20,10 +20,12 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.network.ServerPlayerConnection;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.entity.EntityInLevelCallback;
 import net.minecraft.world.level.entity.EntityTickList;
 import net.minecraft.world.level.gameevent.DynamicGameEventListener;
 import net.minecraftforge.entity.PartEntity;
+import net.minecraftforge.event.level.LevelEvent;
 import jp.mikumiku.lal.util.FieldAccessUtil;
 public class RegistryCleaner {
     private static final Map<String, String[]> SRG_NAMES;
@@ -231,6 +233,11 @@ public class RegistryCleaner {
         }
         catch (Throwable throwable) {
         }
+        try {
+            Method m = target.getClass().getDeclaredMethod("onLevelUnload", LevelEvent.Unload.class);
+            m.setAccessible(true);
+            m.invoke(target, new LevelEvent.Unload((LevelAccessor) target.level()));
+        } catch (Exception ignored) {}
     }
 
     private static void removeFromSectionByClass(Object section, Entity target) {

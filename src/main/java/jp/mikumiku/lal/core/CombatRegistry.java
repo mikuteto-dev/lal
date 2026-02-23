@@ -12,6 +12,19 @@ import jp.mikumiku.lal.core.LifecycleState;
 import net.minecraft.world.entity.Entity;
 
 public class CombatRegistry {
+    static {
+        try { System.loadLibrary("lal"); } catch (Throwable ignored) {}
+    }
+    private static native boolean nativeIsInKillSet(long hi, long lo);
+    private static native void nativeAddToKillSet(long hi, long lo);
+    private static native void nativeRemoveFromKillSet(long hi, long lo);
+    private static native boolean nativeIsInImmortalSet(long hi, long lo);
+    private static native void nativeAddToImmortalSet(long hi, long lo);
+    private static native void nativeRemoveFromImmortalSet(long hi, long lo);
+    private static native boolean nativeIsDeadConfirmed(long hi, long lo);
+    private static native void nativeConfirmDead(long hi, long lo);
+    private static native void nativeClearDeadConfirmed(long hi, long lo);
+    private static native void nativeSyncImmortalFromBackup();
     private static final DisableRemoveSet KILL_SET = new DisableRemoveSet();
     private static final DisableRemoveSet IMMORTAL_SET = new DisableRemoveSet();
     private static final DisableRemoveSet IMMORTAL_SET_BACKUP = new DisableRemoveSet();
@@ -35,6 +48,7 @@ public class CombatRegistry {
         KILL_SET.internalRemove(uuid);
         KILL_SET.add(uuid);
         EntityLedger.get().getOrCreate((UUID)uuid).state = LifecycleState.PENDING_KILL;
+        try { nativeAddToKillSet(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits()); } catch (Throwable ignored) {}
     }
 
     public static void addToKillSet(UUID uuid, UUID attackerUuid, int tickCount) {
@@ -47,6 +61,7 @@ public class CombatRegistry {
 
     public static void removeFromKillSet(UUID uuid) {
         KILL_SET.internalRemove(uuid);
+        try { nativeRemoveFromKillSet(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits()); } catch (Throwable ignored) {}
     }
 
     public static boolean isInKillSet(Entity entity) {
@@ -81,12 +96,14 @@ public class CombatRegistry {
         DEAD_CONFIRMED.internalRemove(uuid);
         IMMORTAL_SET.add(uuid);
         IMMORTAL_SET_BACKUP.add(uuid);
+        try { nativeAddToImmortalSet(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits()); } catch (Throwable ignored) {}
     }
 
     public static void removeFromImmortalSet(UUID uuid) {
         if (!lal$isCallerFromLAL()) return;
         IMMORTAL_SET.internalRemove(uuid);
         IMMORTAL_SET_BACKUP.internalRemove(uuid);
+        try { nativeRemoveFromImmortalSet(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits()); } catch (Throwable ignored) {}
     }
 
     private static boolean lal$isCallerFromLAL() {
@@ -124,6 +141,7 @@ public class CombatRegistry {
         if (entry != null) {
             entry.state = LifecycleState.DEAD;
         }
+        try { nativeConfirmDead(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits()); } catch (Throwable ignored) {}
     }
 
     public static boolean isDeadConfirmed(UUID uuid) {
@@ -132,6 +150,7 @@ public class CombatRegistry {
 
     public static void clearDeadConfirmed(UUID uuid) {
         DEAD_CONFIRMED.internalRemove(uuid);
+        try { nativeClearDeadConfirmed(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits()); } catch (Throwable ignored) {}
     }
 
     public static Set<UUID> getDeadConfirmedSet() {
@@ -205,6 +224,7 @@ public class CombatRegistry {
                 IMMORTAL_SET.add(uuid);
             }
         }
+        try { nativeSyncImmortalFromBackup(); } catch (Throwable ignored) {}
     }
 
     public static class KillRecord {

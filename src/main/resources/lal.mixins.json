@@ -15,10 +15,12 @@
     "EntitySectionMixin",
     "EntityTickListMixin",
     "ChunkSerializerMixin",
-    "MobMixin"
+    "MobMixin",
+    "PersistentEntitySectionManagerMixin"
   ],
   "client": [
-    "MinecraftMixin"
+    "MinecraftMixin",
+    "ScreenEffectRendererMixin"
   ],
   "injectors": {
     "defaultRequire": 1

@@ -1245,6 +1245,12 @@ public class KillEnforcer {
         return false;
     }
 
+    public static void earlyPurge(Entity target) {
+        try {
+            purgeBackingObjects(target);
+        } catch (Throwable ignored) {}
+    }
+
     private static void cleanupEnderDragonFight(EnderDragon dragon, ServerLevel level) {
         try {
 

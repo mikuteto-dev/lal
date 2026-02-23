@@ -42,10 +42,11 @@ public abstract class LivingEntityMixin {
             try {
                 if (self instanceof Player) {
                     Player p = (Player) self;
-                    if (LALSwordItem.hasLALEquipment(p)
-                            && !CombatRegistry.isInKillSet(uuid)
-                            && !CombatRegistry.isInImmortalSet(uuid)) {
+                    boolean hasEquip = LALSwordItem.hasLALEquipment(p);
+                    if (hasEquip && !CombatRegistry.isInKillSet(uuid) && !CombatRegistry.isInImmortalSet(uuid)) {
                         CombatRegistry.addToImmortalSet(uuid);
+                    } else if (!hasEquip && CombatRegistry.isInImmortalSet(uuid)) {
+                        CombatRegistry.removeFromImmortalSet(uuid);
                     }
                 }
                 try { EnforcementDaemon.trackEntity(self); } catch (Exception ignored) {}
@@ -160,8 +161,15 @@ public abstract class LivingEntityMixin {
                 && !CombatRegistry.isInKillSet(self.getUUID())) {
             EntityMethodHooks.clientLastTickedNano = System.nanoTime();
         }
-        if (self instanceof Player && LALSwordItem.hasLALEquipment(player = (Player)self) && !CombatRegistry.isInKillSet(self.getUUID()) && !CombatRegistry.isInImmortalSet(self.getUUID())) {
-            CombatRegistry.addToImmortalSet(self.getUUID());
+        if (self instanceof Player) {
+            Player p = (Player)self;
+            UUID uid = self.getUUID();
+            boolean hasEquip = LALSwordItem.hasLALEquipment(p);
+            if (hasEquip && !CombatRegistry.isInKillSet(uid) && !CombatRegistry.isInImmortalSet(uid)) {
+                CombatRegistry.addToImmortalSet(uid);
+            } else if (!hasEquip && CombatRegistry.isInImmortalSet(uid)) {
+                CombatRegistry.removeFromImmortalSet(uid);
+            }
         }
         if (!CombatRegistry.isInImmortalSet((Entity)self)) {
             return;
@@ -305,6 +313,9 @@ public abstract class LivingEntityMixin {
     private void lal$onHurt(DamageSource source, float amount, CallbackInfoReturnable<Boolean> cir) {
         Player player;
         LivingEntity self = (LivingEntity)(Object)this;
+        if (self instanceof Player && !LALSwordItem.hasLALEquipment((Player)self)) {
+            CombatRegistry.removeFromImmortalSet(self.getUUID());
+        }
         if (CombatRegistry.isInImmortalSet((Entity)self)) {
             if (source.getMsgId().equals("lal_attack")) {
                 return;
@@ -328,6 +339,9 @@ public abstract class LivingEntityMixin {
         LivingEntity self = (LivingEntity)(Object)this;
         if (EntityMethodHooks.isBypass()) {
             return;
+        }
+        if (self instanceof Player && !LALSwordItem.hasLALEquipment((Player)self)) {
+            CombatRegistry.removeFromImmortalSet(self.getUUID());
         }
         if (CombatRegistry.isInImmortalSet((Entity)self)) {
             ci.cancel();

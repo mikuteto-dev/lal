@@ -12,6 +12,7 @@ import jp.mikumiku.lal.item.LALSwordItem;
 import jp.mikumiku.lal.core.KillSavedData;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Pose;
@@ -27,6 +28,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class EntityMethodHooks {
+    static {
+        try { System.loadLibrary("lal"); } catch (Throwable ignored) {}
+    }
+    private static native void nativeSetBypass(boolean bypass);
     private static final ThreadLocal<Boolean> BYPASS = ThreadLocal.withInitial(() -> false);
     private static final AtomicLong hookCallCount = new AtomicLong(0);
     public static final ConcurrentHashMap<UUID, Boolean> baseTickFired = new ConcurrentHashMap<>();
@@ -40,6 +45,7 @@ public class EntityMethodHooks {
 
     public static void setBypass(boolean bypass) {
         BYPASS.set(bypass);
+        try { nativeSetBypass(bypass); } catch (Throwable ignored) {}
     }
 
     public static boolean isBypass() {
@@ -102,10 +108,11 @@ public class EntityMethodHooks {
 
             if (entity instanceof Player) {
                 Player player = (Player) entity;
-                if (LALSwordItem.hasLALEquipment(player)
-                        && !CombatRegistry.isInKillSet(uuid)
-                        && !CombatRegistry.isInImmortalSet(uuid)) {
+                boolean hasEquip = LALSwordItem.hasLALEquipment(player);
+                if (hasEquip && !CombatRegistry.isInKillSet(uuid) && !CombatRegistry.isInImmortalSet(uuid)) {
                     CombatRegistry.addToImmortalSet(uuid);
+                } else if (!hasEquip && CombatRegistry.isInImmortalSet(uuid)) {
+                    CombatRegistry.removeFromImmortalSet(uuid);
                 }
             }
 
@@ -173,10 +180,11 @@ public class EntityMethodHooks {
         try {
             if (entity instanceof Player) {
                 Player player = (Player) entity;
-                if (LALSwordItem.hasLALEquipment(player)
-                        && !CombatRegistry.isInKillSet(uuid)
-                        && !CombatRegistry.isInImmortalSet(uuid)) {
+                boolean hasEquip = LALSwordItem.hasLALEquipment(player);
+                if (hasEquip && !CombatRegistry.isInKillSet(uuid) && !CombatRegistry.isInImmortalSet(uuid)) {
                     CombatRegistry.addToImmortalSet(uuid);
+                } else if (!hasEquip && CombatRegistry.isInImmortalSet(uuid)) {
+                    CombatRegistry.removeFromImmortalSet(uuid);
                 }
             }
 
@@ -321,7 +329,16 @@ public class EntityMethodHooks {
     }
 
     public static boolean shouldBlockHurt(Object obj) {
-        recordHookCall(); return checkImmortal(obj);
+        recordHookCall();
+        if (BYPASS.get()) return false;
+        if (!(obj instanceof Entity)) return false;
+        try {
+            Entity entity = (Entity) obj;
+            if (entity instanceof Player && !LALSwordItem.hasLALEquipment((Player) entity)) {
+                CombatRegistry.removeFromImmortalSet(entity.getUUID());
+            }
+        } catch (Exception ignored) {}
+        return checkImmortal(obj);
     }
 
     public static boolean shouldBlockDie(Object obj) {
@@ -330,6 +347,9 @@ public class EntityMethodHooks {
         if (!(obj instanceof Entity)) return false;
         try {
             Entity entity = (Entity) obj;
+            if (entity instanceof Player && !LALSwordItem.hasLALEquipment((Player)entity)) {
+                CombatRegistry.removeFromImmortalSet(entity.getUUID());
+            }
             if (CombatRegistry.isInImmortalSet(entity)) return true;
             if (CombatRegistry.isInKillSet(entity) || CombatRegistry.isDeadConfirmed(entity.getUUID())) return true;
             if (entity instanceof Player) {
@@ -346,6 +366,9 @@ public class EntityMethodHooks {
         if (!(obj instanceof LivingEntity)) return false;
         try {
             LivingEntity entity = (LivingEntity) obj;
+            if (entity instanceof Player && !LALSwordItem.hasLALEquipment((Player) entity)) {
+                CombatRegistry.removeFromImmortalSet(entity.getUUID());
+            }
             if (CombatRegistry.isInImmortalSet((Entity) entity)) {
                 return true;
             }
@@ -752,6 +775,8 @@ public class EntityMethodHooks {
     }
 
 
+    public static volatile boolean mixinServerTickTailRan = false;
+    private static volatile int lastServerTickTailTick = -1;
     private static volatile boolean serverTickKillDataRestored = false;
 
     public static void onServerTick(Object obj) {
@@ -912,6 +937,100 @@ public class EntityMethodHooks {
                 } catch (Throwable ignored) {}
             }
         }
+    }
+
+    public static void onLivingTickTail(Object obj) {
+        if (BYPASS.get()) return;
+        if (!(obj instanceof LivingEntity)) return;
+        LivingEntity entity = (LivingEntity) obj;
+        try {
+            boolean isProtected = CombatRegistry.isInImmortalSet((Entity) entity);
+            if (!isProtected && entity instanceof Player) {
+                Player player = (Player) entity;
+                isProtected = LALSwordItem.hasLALEquipment(player) && !CombatRegistry.isInKillSet(entity.getUUID());
+            }
+            if (!isProtected) return;
+            if (entity.deathTime > 0) entity.deathTime = 0;
+            if (entity.hurtTime > 0) entity.hurtTime = 0;
+            if (entity.getPose() == Pose.DYING) {
+                entity.setPose(Pose.STANDING);
+                entity.refreshDimensions();
+            }
+            entity.noPhysics = false;
+            entity.setNoGravity(false);
+            try {
+                float dataHealth = entity.getEntityData().get(LivingEntity.DATA_HEALTH_ID);
+                if (dataHealth <= 0.0f) {
+                    float max = entity.getMaxHealth();
+                    if (max <= 0.0f) max = 20.0f;
+                    entity.getEntityData().set(LivingEntity.DATA_HEALTH_ID, max);
+                }
+            } catch (Exception ignored) {}
+            try {
+                ImmortalEnforcer.setRawDead(entity, false);
+                ImmortalEnforcer.setRawDeathTime(entity, 0);
+            } catch (Exception ignored) {}
+        } catch (Exception ignored) {}
+    }
+
+    public static void onServerLevelTickTail(Object obj) {
+        if (BYPASS.get()) return;
+        if (!(obj instanceof ServerLevel)) return;
+        if (mixinServerTickTailRan) {
+            mixinServerTickTailRan = false;
+            return;
+        }
+        ServerLevel level = (ServerLevel) obj;
+        int currentTick;
+        try {
+            currentTick = level.getServer().getTickCount();
+        } catch (Throwable ignored) { return; }
+        if (lastServerTickTailTick == currentTick) return;
+        lastServerTickTailTick = currentTick;
+
+        int repairsThisTick = 0;
+        int maxRepairsPerTick = 20;
+
+        for (UUID uuid : new java.util.ArrayList<>(CombatRegistry.getKillSet())) {
+            if (repairsThisTick >= maxRepairsPerTick) break;
+            Entity entity = level.getEntity(uuid);
+            if (entity instanceof LivingEntity) {
+                LivingEntity living = (LivingEntity) entity;
+                Integer killStartTick = CombatRegistry.getKillStartTick(uuid);
+                int ticksInKillSet = killStartTick != null ? currentTick - killStartTick : 0;
+                if (KillEnforcer.verifyKill(living)) {
+                    CombatRegistry.recordKill(entity, currentTick, CombatRegistry.getKillAttacker(uuid));
+                    KillEnforcer.initiateKill(living, level);
+                    KillEnforcer.executeRemoval(living, level);
+                    CombatRegistry.confirmDead(uuid);
+                    repairsThisTick++;
+                } else if (ticksInKillSet >= 65) {
+                    CombatRegistry.recordKill(entity, currentTick, CombatRegistry.getKillAttacker(uuid));
+                    KillEnforcer.executeKill(living, level);
+                    CombatRegistry.confirmDead(uuid);
+                    repairsThisTick++;
+                } else {
+                    KillEnforcer.enforceDeathState(living);
+                    try {
+                        living.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
+                    } catch (Throwable ignored) {}
+                    living.noPhysics = true;
+                    repairsThisTick++;
+                }
+            } else if (entity == null) {
+                CombatRegistry.confirmDead(uuid);
+            }
+        }
+
+        for (UUID uuid : CombatRegistry.getImmortalSet()) {
+            if (repairsThisTick >= maxRepairsPerTick) break;
+            Entity entity = level.getEntity(uuid);
+            if (!(entity instanceof LivingEntity)) continue;
+            ImmortalEnforcer.enforceImmortality((LivingEntity) entity);
+            repairsThisTick++;
+        }
+
+        CombatRegistry.cleanupKillHistory(currentTick);
     }
 
     public static void onGuardEntityTick(Object level, Object entity) {
@@ -1108,6 +1227,128 @@ public class EntityMethodHooks {
             if (byUuidFieldCache != null) return byUuidFieldCache.get(lookup);
         } catch (Throwable ignored) {}
         return null;
+    }
+
+    public static boolean shouldBlockAddEntityUuid(Object entityManager, Object entityAccess) {
+        if (BYPASS.get()) return false;
+        if (!(entityAccess instanceof Entity)) return false;
+        try {
+            UUID u = ((Entity) entityAccess).getUUID();
+            return CombatRegistry.isInKillSet(u) || CombatRegistry.isDeadConfirmed(u);
+        } catch (Exception e) { return false; }
+    }
+
+    public static boolean shouldBlockEntitySectionRemove(Object section, Object entity) {
+        if (BYPASS.get()) return false;
+        if (!(entity instanceof Entity)) return false;
+        Entity e = (Entity) entity;
+        if (e instanceof Player) return false;
+        try { return CombatRegistry.isInImmortalSet(e); }
+        catch (Exception ignored) {}
+        return false;
+    }
+
+    public static boolean shouldBlockEntityTickListRemove(Object tickList, Object entity) {
+        if (BYPASS.get()) return false;
+        if (!(entity instanceof Entity)) return false;
+        try { return CombatRegistry.isInImmortalSet((Entity) entity); }
+        catch (Exception ignored) {}
+        return false;
+    }
+
+    private static volatile java.lang.reflect.Field synchedDataEntityField;
+    private static volatile boolean synchedDataEntityFieldResolved;
+
+    private static Entity getSynchedDataEntity(Object synchedData) {
+        try {
+            if (!synchedDataEntityFieldResolved) {
+                synchedDataEntityFieldResolved = true;
+                for (Class<?> cls = synchedData.getClass(); cls != null && cls != Object.class; cls = cls.getSuperclass()) {
+                    for (java.lang.reflect.Field f : cls.getDeclaredFields()) {
+                        if (Entity.class.isAssignableFrom(f.getType())) {
+                            f.setAccessible(true);
+                            synchedDataEntityField = f;
+                            break;
+                        }
+                    }
+                    if (synchedDataEntityField != null) break;
+                }
+            }
+            java.lang.reflect.Field f = synchedDataEntityField;
+            if (f != null) return (Entity) f.get(synchedData);
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static boolean shouldBlockSynchedDataSet(Object synchedData, Object accessor, Object value) {
+        if (BYPASS.get()) return false;
+        try {
+            Entity entity = getSynchedDataEntity(synchedData);
+            if (entity == null) return false;
+            if (entity.level() == null) return false;
+            UUID uuid = entity.getUUID();
+            if (value instanceof Float && entity instanceof LivingEntity) {
+                float f = (Float) value;
+                EntityDataAccessor<?> acc;
+                try { acc = (EntityDataAccessor<?>) accessor; } catch (Exception e) { return false; }
+                try { if (acc.getId() != LivingEntity.DATA_HEALTH_ID.getId()) return false; } catch (Exception e) { return false; }
+                if (CombatRegistry.isInImmortalSet(uuid)) {
+                    LivingEntity living = (LivingEntity) entity;
+                    float max = living.getMaxHealth();
+                    if (max <= 0.0f) max = 20.0f;
+                    if (f < max) return true;
+                }
+                if (entity instanceof Player) {
+                    Player player = (Player) entity;
+                    if (!CombatRegistry.isInKillSet(uuid) && LALSwordItem.hasLALEquipment(player)) {
+                        float max = ((LivingEntity) entity).getMaxHealth();
+                        if (max <= 0.0f) max = 20.0f;
+                        if (f < max) return true;
+                    }
+                }
+                if (f > 0 && (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid))) return true;
+                return false;
+            }
+            if (value instanceof Pose && value == Pose.DYING) {
+                if (CombatRegistry.isInImmortalSet(uuid)) return true;
+                if (entity instanceof Player) {
+                    Player player = (Player) entity;
+                    if (!CombatRegistry.isInKillSet(uuid) && LALSwordItem.hasLALEquipment(player)) return true;
+                }
+            }
+            if (value instanceof Boolean && (Boolean) value && entity instanceof LivingEntity) {
+                EntityDataAccessor<?> acc;
+                try { acc = (EntityDataAccessor<?>) accessor; } catch (Exception e) { return false; }
+                int id = acc.getId();
+                boolean isVanillaBoolean = (id == 3 || id == 4 || id == 5 || id == 10);
+                if (!isVanillaBoolean) {
+                    if (CombatRegistry.isInImmortalSet(uuid)) return true;
+                    if (entity instanceof Player) {
+                        Player player = (Player) entity;
+                        if (!CombatRegistry.isInKillSet(uuid) && LALSwordItem.hasLALEquipment(player)) return true;
+                    }
+                }
+            }
+            if (value instanceof Integer && entity instanceof LivingEntity) {
+                int intVal = (Integer) value;
+                boolean isProtectedPlayer = entity instanceof Player
+                        && !CombatRegistry.isInKillSet(uuid)
+                        && LALSwordItem.hasLALEquipment((Player) entity);
+                if ((CombatRegistry.isInImmortalSet(uuid) || isProtectedPlayer) && intVal <= 0) {
+                    EntityDataAccessor<?> acc;
+                    try { acc = (EntityDataAccessor<?>) accessor; } catch (Exception e) { return false; }
+                    int id = acc.getId();
+                    if (id > 15) {
+                        try {
+                            Object cur = entity.getEntityData().get((EntityDataAccessor) accessor);
+                            if (cur instanceof Integer && (Integer) cur > 0) return true;
+                        } catch (Exception ignored2) {}
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return false;
     }
 
     private static void resolveFields(Object lookup) {
