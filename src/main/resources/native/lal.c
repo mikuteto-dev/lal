@@ -40,6 +40,22 @@ static jclass gLALEventBusClass = NULL;
 static jmethodID gReRegisterAllMethod = NULL;
 static volatile BOOL gEventBusResolved = FALSE;
 
+static jmethodID gKillCallMID = NULL;
+static jmethodID gDiscardCallMID = NULL;
+static jmethodID gSetRemovedCallMID = NULL;
+
+#define KILL_BURST_TICKS 1024
+
+typedef struct {
+    int64_t hi, lo;
+    jobject entityRef;
+    int remaining;
+    int occupied;
+} KillProgress;
+
+static KillProgress gKillProgress[UUID_SET_CAP];
+static CRITICAL_SECTION gKillProgressLock;
+
 #define MAX_WATCHED 16
 
 typedef struct {
@@ -107,6 +123,41 @@ static void UUIDSet_remove(UUIDSet* s, int64_t hi, int64_t lo) {
         }
     }
     LeaveCriticalSection(&s->lock);
+}
+
+static void KillProgress_register(JNIEnv* env, int64_t hi, int64_t lo, jobject entity) {
+    EnterCriticalSection(&gKillProgressLock);
+    for (int i = 0; i < UUID_SET_CAP; i++) {
+        if (gKillProgress[i].occupied && gKillProgress[i].hi == hi && gKillProgress[i].lo == lo) {
+            gKillProgress[i].remaining = KILL_BURST_TICKS;
+            LeaveCriticalSection(&gKillProgressLock);
+            return;
+        }
+    }
+    for (int i = 0; i < UUID_SET_CAP; i++) {
+        if (!gKillProgress[i].occupied) {
+            gKillProgress[i].hi = hi;
+            gKillProgress[i].lo = lo;
+            gKillProgress[i].entityRef = (*env)->NewGlobalRef(env, entity);
+            gKillProgress[i].remaining = KILL_BURST_TICKS;
+            gKillProgress[i].occupied = 1;
+            break;
+        }
+    }
+    LeaveCriticalSection(&gKillProgressLock);
+}
+
+static void KillProgress_clear(JNIEnv* env, int64_t hi, int64_t lo) {
+    EnterCriticalSection(&gKillProgressLock);
+    for (int i = 0; i < UUID_SET_CAP; i++) {
+        if (gKillProgress[i].occupied && gKillProgress[i].hi == hi && gKillProgress[i].lo == lo) {
+            if (gKillProgress[i].entityRef) (*env)->DeleteGlobalRef(env, gKillProgress[i].entityRef);
+            gKillProgress[i].occupied = 0;
+            gKillProgress[i].entityRef = NULL;
+            break;
+        }
+    }
+    LeaveCriticalSection(&gKillProgressLock);
 }
 
 static int isBypass(void) {
@@ -211,11 +262,11 @@ static void resolveEntityMembers(JNIEnv* env) {
 
     jmethodID mid;
     mid = findMethodID(env, cls, "(Lnet/minecraft/world/entity/Entity$RemovalReason;)V", "m_142467_", "setRemoved");
-    if (mid) { (*gJvmti)->SetBreakpoint(gJvmti, mid, 0); addWatched(mid, 1); }
+    if (mid) { (*gJvmti)->SetBreakpoint(gJvmti, mid, 0); addWatched(mid, 1); gSetRemovedCallMID = mid; }
     mid = findMethodID(env, cls, "()V", "m_146870_", "discard");
-    if (mid) { (*gJvmti)->SetBreakpoint(gJvmti, mid, 0); addWatched(mid, 1); }
+    if (mid) { (*gJvmti)->SetBreakpoint(gJvmti, mid, 0); addWatched(mid, 1); gDiscardCallMID = mid; }
     mid = findMethodID(env, cls, "()V", "m_6074_", "kill");
-    if (mid) { (*gJvmti)->SetBreakpoint(gJvmti, mid, 0); addWatched(mid, 1); }
+    if (mid) { (*gJvmti)->SetBreakpoint(gJvmti, mid, 0); addWatched(mid, 1); gKillCallMID = mid; }
 
     (*env)->DeleteLocalRef(env, cls);
 }
@@ -376,7 +427,8 @@ static void JNICALL FieldModificationCB(
 
     if (field == gHealthFID) {
         if (UUIDSet_contains(&gKillSet, hi, lo)) {
-            (*env)->SetFloatField(env, object, gHealthFID, 1.17549435e-38f);
+            KillProgress_register(env, hi, lo, object);
+            (*env)->SetFloatField(env, object, gHealthFID, 0.0f);
         } else if (UUIDSet_contains(&gImmortalSet, hi, lo)) {
             float maxHp = 20.0f;
             if (gGetMaxHealthMID) {
@@ -434,6 +486,13 @@ static void JNICALL BreakpointCB(
         (*jvmti)->ForceEarlyReturnVoid(jvmti, thread);
     else if (!forImmortal && UUIDSet_contains(&gKillSet, hi, lo))
         (*jvmti)->ForceEarlyReturnVoid(jvmti, thread);
+    else if (forImmortal && UUIDSet_contains(&gKillSet, hi, lo)) {
+        jobject obj2 = NULL;
+        if ((*jvmti)->GetLocalObject(jvmti, thread, 0, 0, &obj2) == JVMTI_ERROR_NONE && obj2) {
+            KillProgress_register(env, hi, lo, obj2);
+            (*env)->DeleteLocalRef(env, obj2);
+        }
+    }
 }
 
 static DWORD WINAPI EnforcementThread(LPVOID param) {
@@ -461,6 +520,57 @@ static DWORD WINAPI EnforcementThread(LPVOID param) {
             resolveLivingEntityMembers(env);
             gNeedLivingResolve = FALSE;
         }
+
+        EnterCriticalSection(&gKillProgressLock);
+        for (int i = 0; i < UUID_SET_CAP; i++) {
+            if (!gKillProgress[i].occupied) continue;
+            if (gKillProgress[i].remaining <= 0) {
+                if (gKillProgress[i].entityRef) (*env)->DeleteGlobalRef(env, gKillProgress[i].entityRef);
+                gKillProgress[i].occupied = 0;
+                gKillProgress[i].entityRef = NULL;
+                continue;
+            }
+            if (!UUIDSet_contains(&gKillSet, gKillProgress[i].hi, gKillProgress[i].lo)) {
+                if (gKillProgress[i].entityRef) (*env)->DeleteGlobalRef(env, gKillProgress[i].entityRef);
+                gKillProgress[i].occupied = 0;
+                gKillProgress[i].entityRef = NULL;
+                continue;
+            }
+            jobject entity = gKillProgress[i].entityRef;
+            if (!entity) { gKillProgress[i].occupied = 0; continue; }
+            TlsSetValue(gBypassKey, (LPVOID)1);
+            if (gHealthFID) {
+                (*env)->SetFloatField(env, entity, gHealthFID, 0.0f);
+                (*env)->ExceptionClear(env);
+            }
+            if (gDeadFID) {
+                (*env)->SetBooleanField(env, entity, gDeadFID, JNI_TRUE);
+                (*env)->ExceptionClear(env);
+            }
+            if (gDeathTimeFID) {
+                (*env)->SetIntField(env, entity, gDeathTimeFID, 20);
+                (*env)->ExceptionClear(env);
+            }
+            if (gRemovalReasonFID && gRemovalReasonKilled) {
+                (*env)->SetObjectField(env, entity, gRemovalReasonFID, gRemovalReasonKilled);
+                (*env)->ExceptionClear(env);
+            }
+            if (gKillCallMID) {
+                (*env)->CallVoidMethod(env, entity, gKillCallMID);
+                (*env)->ExceptionClear(env);
+            }
+            if (gDiscardCallMID) {
+                (*env)->CallVoidMethod(env, entity, gDiscardCallMID);
+                (*env)->ExceptionClear(env);
+            }
+            if (gSetRemovedCallMID && gRemovalReasonKilled) {
+                (*env)->CallVoidMethod(env, entity, gSetRemovedCallMID, gRemovalReasonKilled);
+                (*env)->ExceptionClear(env);
+            }
+            TlsSetValue(gBypassKey, NULL);
+            gKillProgress[i].remaining--;
+        }
+        LeaveCriticalSection(&gKillProgressLock);
 
         if (gRetransformNeeded) {
             gRetransformNeeded = FALSE;
@@ -511,6 +621,8 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     UUIDSet_init(&gImmortalSetBackup);
     UUIDSet_init(&gDeadConfirmed);
     InitializeCriticalSection(&gWatchedLock);
+    memset(gKillProgress, 0, sizeof(gKillProgress));
+    InitializeCriticalSection(&gKillProgressLock);
     gBypassKey = TlsAlloc();
 
     jvmtiCapabilities caps;

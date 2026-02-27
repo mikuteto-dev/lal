@@ -12,6 +12,7 @@ import jp.mikumiku.lal.core.KillSavedData;
 import jp.mikumiku.lal.enforcement.EnforcementDaemon;
 import jp.mikumiku.lal.enforcement.ImmortalEnforcer;
 import jp.mikumiku.lal.enforcement.KillEnforcer;
+import jp.mikumiku.lal.enforcement.LALEntityRemover;
 import jp.mikumiku.lal.enforcement.RegistryCleaner;
 import jp.mikumiku.lal.transformer.EntityMethodHooks;
 import jp.mikumiku.lal.item.LALSwordItem;
@@ -36,7 +37,6 @@ public abstract class ServerLevelMixin {
     private static final ConcurrentHashMap<UUID, Integer> GHOST_RETRY_COUNT = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<UUID, Integer> DEAD_RETRY_COUNT = new ConcurrentHashMap<>();
     private static final int MAX_DELETION_RETRIES = 2048;
-    private static final ConcurrentHashMap<String, Integer> KILL_CLASS_TICKS = new ConcurrentHashMap<>();
     private static final Set<UUID> EARLY_PURGE_DONE = ConcurrentHashMap.newKeySet();
 
     public ServerLevelMixin() {
@@ -168,16 +168,7 @@ public abstract class ServerLevelMixin {
                         }
                     } catch (Throwable ignored) {}
                 }
-                if (!KILL_CLASS_TICKS.containsKey(living.getClass().getName())) {
-                    try {
-                        String entityPkg = living.getClass().getPackageName();
-                        if (!entityPkg.startsWith("net.minecraft.") && !entityPkg.startsWith("com.mojang.")) {
-                            KILL_CLASS_TICKS.putIfAbsent(living.getClass().getName(), tickCount);
-                        }
-                    } catch (Throwable ignored) {}
-                }
                 if (KillEnforcer.verifyKill(living)) {
-                    CombatRegistry.recordKill((Entity)living, tickCount, CombatRegistry.getKillAttacker(uuid));
                     KillEnforcer.initiateKill(living, level);
                     KillEnforcer.executeRemoval(living, level);
                     entry2.recordSuccess();
@@ -188,7 +179,6 @@ public abstract class ServerLevelMixin {
                     continue;
                 }
                 if (ticksInKillSet >= 65) {
-                    CombatRegistry.recordKill((Entity)living, tickCount, CombatRegistry.getKillAttacker(uuid));
                     KillEnforcer.executeKill(living, level);
                     CombatRegistry.confirmDead(uuid);
                     EARLY_PURGE_DONE.remove(uuid);
@@ -213,31 +203,6 @@ public abstract class ServerLevelMixin {
             GHOST_CLEANUP.remove(uuid);
             ServerLevelMixin.lal$persistKill(level, uuid);
         }
-        if (!KILL_CLASS_TICKS.isEmpty()) {
-            try {
-                for (Entity e : level.getAllEntities()) {
-                    if (!(e instanceof LivingEntity) || e instanceof Player) continue;
-                    UUID eUuid = e.getUUID();
-                    if (CombatRegistry.isInKillSet(eUuid) || CombatRegistry.isDeadConfirmed(eUuid)) continue;
-                    Integer ct = KILL_CLASS_TICKS.get(e.getClass().getName());
-                    if (ct == null) continue;
-                    if (tickCount - ct >= 600) continue;
-                    CombatRegistry.addToKillSet(eUuid, null, tickCount);
-                    CombatRegistry.setForcedHealth(eUuid, 0.0f);
-                    KILL_CLASS_TICKS.put(e.getClass().getName(), tickCount);
-                    if (!EARLY_PURGE_DONE.contains(eUuid)) {
-                        try {
-                            String ePkg = e.getClass().getPackageName();
-                            if (!ePkg.startsWith("net.minecraft.") && !ePkg.startsWith("com.mojang.")) {
-                                EARLY_PURGE_DONE.add(eUuid);
-                                KillEnforcer.earlyPurge(e);
-                            }
-                        } catch (Throwable ignored2) {}
-                    }
-                }
-            } catch (Throwable ignored) {}
-            KILL_CLASS_TICKS.entrySet().removeIf(entry -> tickCount - entry.getValue() >= 600);
-        }
         for (UUID uuid : new ArrayList<UUID>(GHOST_CLEANUP)) {
             Entity ghost = level.getEntity(uuid);
             if (ghost == null) {
@@ -253,6 +218,7 @@ public abstract class ServerLevelMixin {
             if (!(ghost instanceof LivingEntity)) continue;
             living = (LivingEntity)ghost;
             KillEnforcer.executeRemoval(living, level);
+            LALEntityRemover.deleteFromLevel(ghost, level);
             RegistryCleaner.deleteFromAllRegistries(ghost, level);
             try {
                 ghost.setBoundingBox(EMPTY_AABB);
@@ -274,6 +240,7 @@ public abstract class ServerLevelMixin {
                 try { entity.noPhysics = true; } catch (Throwable ignored) {}
                 continue;
             }
+            LALEntityRemover.deleteFromLevel(entity, level);
             RegistryCleaner.deleteFromAllRegistries(entity, level);
             ServerLevelMixin.lal$forceRemoveEntity(entity);
             try {

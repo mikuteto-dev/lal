@@ -505,19 +505,19 @@ public class RegistryCleaner {
 
     static {
         HashMap<String, String[]> m = new HashMap<String, String[]>();
-        m.put("entityManager", new String[]{"entityManager", "f_157650_"});
-        m.put("sectionStorage", new String[]{"sectionStorage", "f_157489_"});
-        m.put("visibleEntityStorage", new String[]{"visibleEntityStorage", "f_157491_"});
-        m.put("knownUuids", new String[]{"knownUuids", "f_157490_"});
+        m.put("entityManager", new String[]{"entityManager", "f_143244_"});
+        m.put("sectionStorage", new String[]{"sectionStorage", "f_157495_"});
+        m.put("visibleEntityStorage", new String[]{"visibleEntityStorage", "f_157494_"});
+        m.put("knownUuids", new String[]{"knownUuids", "f_157491_"});
         m.put("entityMap", new String[]{"entityMap", "f_140175_"});
-        m.put("entityTickList", new String[]{"entityTickList", "f_143249_"});
-        m.put("active", new String[]{"active", "f_156918_"});
-        m.put("passive", new String[]{"passive", "f_156919_"});
+        m.put("entityTickList", new String[]{"entityTickList", "f_143243_"});
+        m.put("active", new String[]{"active", "f_156903_"});
+        m.put("passive", new String[]{"passive", "f_156904_"});
         m.put("storage", new String[]{"storage", "f_188348_"});
         m.put("byClass", new String[]{"byClass", "f_13524_"});
         m.put("allInstances", new String[]{"allInstances", "f_13525_"});
-        m.put("byUuid", new String[]{"byUuid", "f_156817_"});
-        m.put("byId", new String[]{"byId", "f_156816_"});
+        m.put("byUuid", new String[]{"byUuid", "f_156808_"});
+        m.put("byId", new String[]{"byId", "f_156807_"});
         SRG_NAMES = Map.copyOf(m);
     }
 }

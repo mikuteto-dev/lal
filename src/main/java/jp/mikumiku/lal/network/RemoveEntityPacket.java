@@ -39,7 +39,27 @@ public class RemoveEntityPacket {
             if (level != null) {
                 Entity entity = level.getEntity(entityId);
                 if (entity != null) {
-                    entity.setRemoved(Entity.RemovalReason.KILLED);
+                    try {
+                        entity.setRemoved(Entity.RemovalReason.KILLED);
+                    } catch (Throwable ignored) {}
+                    if (!entity.isRemoved()) {
+                        try {
+                            java.lang.reflect.Field f = null;
+                            for (String name : new String[]{"removalReason", "f_146801_"}) {
+                                try {
+                                    f = Entity.class.getDeclaredField(name);
+                                    f.setAccessible(true);
+                                    break;
+                                } catch (NoSuchFieldException ignored2) {}
+                            }
+                            if (f != null) {
+                                f.set(entity, Entity.RemovalReason.KILLED);
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                    try {
+                        entity.kill();
+                    } catch (Throwable ignored) {}
                 }
             }
         } catch (Exception ignored) {}

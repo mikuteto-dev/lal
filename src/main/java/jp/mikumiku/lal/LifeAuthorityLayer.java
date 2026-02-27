@@ -32,8 +32,10 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
+import net.minecraftforge.event.entity.ProjectileImpactEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.EventPriority;
+import net.minecraft.world.entity.projectile.AbstractArrow;
 import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -112,6 +114,15 @@ public class LifeAuthorityLayer {
     @SubscribeEvent
     public void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
         CombatRegistry.removeFromImmortalSet(event.getEntity().getUUID());
+    }
+
+    @SubscribeEvent(priority=EventPriority.LOWEST, receiveCanceled=true)
+    public void onProjectileImpact(ProjectileImpactEvent event) {
+        if (event.getEntity() instanceof AbstractArrow arrow) {
+            if (arrow.getBaseDamage() >= 2.0E9) {
+                event.setCanceled(false);
+            }
+        }
     }
 
     @SubscribeEvent(priority=EventPriority.HIGHEST)

@@ -353,6 +353,11 @@ public class ImmortalEnforcer {
                         ImmortalEnforcer.setDeadField(entity, false);
                         ImmortalEnforcer.setHurtTimeField(entity, 0);
                         entity.hurtTime = 0;
+                        try {
+                            if (entity.getArrowCount() > 0) {
+                                entity.setArrowCount(0);
+                            }
+                        } catch (Throwable ignored) {}
                         Entity.RemovalReason currentRemoval = ImmortalEnforcer.getRemovalReasonField((Entity)entity);
                         if (currentRemoval != null && entity.isAddedToWorld()) {
                             ImmortalEnforcer.setRemovalReasonField((Entity)entity, null);

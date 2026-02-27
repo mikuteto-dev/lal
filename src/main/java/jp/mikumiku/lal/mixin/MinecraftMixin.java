@@ -132,11 +132,19 @@ public class MinecraftMixin {
 
     private static void lal$forceAliveOnClient(LocalPlayer player) {
         try {
-            float health = player.getHealth();
+            float health = 1.0f;
+            try {
+                health = player.getEntityData().get(LivingEntity.DATA_HEALTH_ID);
+            } catch (Exception ignored) {}
             if (health <= 0.0f) {
                 float max = player.getMaxHealth();
                 if (max <= 0.0f) max = 20.0f;
-                player.setHealth(max);
+                EntityMethodHooks.setBypass(true);
+                try {
+                    player.setHealth(max);
+                } finally {
+                    EntityMethodHooks.setBypass(false);
+                }
             }
 
             if (!lal$entityFieldsResolved) {

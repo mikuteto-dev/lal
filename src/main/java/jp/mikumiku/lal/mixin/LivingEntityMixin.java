@@ -178,6 +178,10 @@ public abstract class LivingEntityMixin {
             self.deathTime = 0;
         }
         self.hurtTime = 0;
+        if (self.getArrowCount() > 0) {
+            EntityMethodHooks.setBypass(true);
+            try { self.setArrowCount(0); } finally { EntityMethodHooks.setBypass(false); }
+        }
         if (self.getPose() == Pose.DYING) {
             self.setPose(Pose.STANDING);
             self.refreshDimensions();
@@ -356,6 +360,15 @@ public abstract class LivingEntityMixin {
         }
     }
 
+    @Inject(method={"getMaxHealth"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$getMaxHealthKill(CallbackInfoReturnable<Float> cir) {
+        if (EntityMethodHooks.isBypass()) return;
+        LivingEntity self = (LivingEntity)(Object)this;
+        if (CombatRegistry.isInKillSet((Entity)self) || CombatRegistry.isDeadConfirmed(self.getUUID())) {
+            cir.setReturnValue(20.0f);
+        }
+    }
+
     @Inject(method={"getMaxHealth"}, at={@At(value="RETURN")}, cancellable=true)
     private void lal$getMaxHealth(CallbackInfoReturnable<Float> cir) {
         LivingEntity self = (LivingEntity)(Object)this;
@@ -478,6 +491,15 @@ public abstract class LivingEntityMixin {
         }
     }
 
+    @Inject(method={"setArrowCount"}, at={@At(value="HEAD")}, cancellable=true)
+    private void lal$onSetArrowCount(int count, CallbackInfo ci) {
+        if (EntityMethodHooks.isBypass()) return;
+        LivingEntity self = (LivingEntity)(Object)this;
+        if (CombatRegistry.isInImmortalSet((Entity)self)) {
+            ci.cancel();
+        }
+    }
+
     @Inject(method={"onSyncedDataUpdated"}, at={@At(value="HEAD")})
     private void lal$interceptHealthUpdate(EntityDataAccessor<?> key, CallbackInfo ci) {
         try {
@@ -541,6 +563,10 @@ public abstract class LivingEntityMixin {
         }
         if (self.hurtTime > 0) {
             self.hurtTime = 0;
+        }
+        if (self.getArrowCount() > 0) {
+            EntityMethodHooks.setBypass(true);
+            try { self.setArrowCount(0); } finally { EntityMethodHooks.setBypass(false); }
         }
         if (self.getPose() == Pose.DYING) {
             self.setPose(Pose.STANDING);

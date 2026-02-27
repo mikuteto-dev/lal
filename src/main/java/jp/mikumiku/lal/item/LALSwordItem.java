@@ -19,6 +19,8 @@ import net.minecraft.world.item.Tier;
 import net.minecraft.world.item.Tiers;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.dimension.end.EndDragonFight;
+import java.util.ArrayList;
+import java.util.List;
 
 public class LALSwordItem
 extends SwordItem {
@@ -68,21 +70,25 @@ extends SwordItem {
     public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {
         if (!level.isClientSide() && player instanceof ServerPlayer) {
             ServerPlayer sp = (ServerPlayer)player;
-            CustomBossEvents customBossEvents = sp.getServer().getCustomBossEvents();
-            for (CustomBossEvent event : customBossEvents.getEvents()) {
-                event.removePlayer(sp);
-            }
             if (level instanceof ServerLevel) {
                 ServerLevel sl = (ServerLevel)level;
+                List<LivingEntity> targets = new ArrayList<>();
                 for (Entity entity : sl.getAllEntities()) {
-                    if (!(entity instanceof WitherBoss)) continue;
-                    WitherBoss wither = (WitherBoss)entity;
-                    wither.bossEvent.removePlayer(sp);
+                    if (entity instanceof LivingEntity && !(entity instanceof Player)) {
+                        targets.add((LivingEntity) entity);
+                    }
+                }
+                for (LivingEntity target : targets) {
+                    KillEnforcer.forceKill(target, sl, (Entity)player);
                 }
                 EndDragonFight dragonFight = sl.getDragonFight();
                 if (dragonFight != null) {
                     dragonFight.dragonEvent.removePlayer(sp);
                 }
+            }
+            CustomBossEvents customBossEvents = sp.getServer().getCustomBossEvents();
+            for (CustomBossEvent event : customBossEvents.getEvents()) {
+                event.removePlayer(sp);
             }
         }
         return InteractionResultHolder.sidedSuccess(player.getItemInHand(hand), level.isClientSide());

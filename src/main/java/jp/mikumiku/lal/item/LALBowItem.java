@@ -18,6 +18,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.entity.PartEntity;
 
 public class LALBowItem
 extends BowItem {
@@ -62,7 +63,7 @@ extends BowItem {
         AABB searchBox = player.getBoundingBox().expandTowards(lookVec.scale(256.0)).inflate(2.0);
         EntityHitResult entityHit = null;
         double closestDist = 65536.0;
-        for (Entity candidate : level.getEntities((Entity)player, searchBox, e -> e instanceof LivingEntity && e.isAlive() && e.isPickable())) {
+        for (Entity candidate : level.getEntities((Entity)player, searchBox, e -> !e.isSpectator() && e.isPickable())) {
             double dist;
             AABB aabb = candidate.getBoundingBox().inflate((double)candidate.getPickRadius() + 0.5);
             Optional hitVec = aabb.clip(eyePos, endPos);
@@ -70,18 +71,36 @@ extends BowItem {
             closestDist = dist;
             entityHit = new EntityHitResult(candidate, (Vec3)hitVec.get());
         }
-        if (entityHit != null && (entity = entityHit.getEntity()) instanceof LivingEntity) {
-            LivingEntity target = (LivingEntity)entity;
-            KillEnforcer.forceKill(target, sl, (Entity)player);
+        if (entityHit != null) {
+            entity = entityHit.getEntity();
+            LivingEntity target = null;
+            if (entity instanceof LivingEntity) {
+                target = (LivingEntity) entity;
+            } else if (entity instanceof PartEntity<?>) {
+                Entity parent = ((PartEntity<?>) entity).getParent();
+                if (parent instanceof LivingEntity) {
+                    target = (LivingEntity) parent;
+                }
+            }
+            if (target != null) {
+                KillEnforcer.forceKill(target, sl, (Entity) player);
+            }
         }
         Arrow arrow = new Arrow(level, (LivingEntity)player){
 
             protected void onHitEntity(EntityHitResult result) {
-                LivingEntity target;
-                Level level;
                 Entity entity = result.getEntity();
-                if (entity instanceof LivingEntity && (level = (target = (LivingEntity)entity).level()) instanceof ServerLevel) {
-                    ServerLevel s = (ServerLevel)level;
+                LivingEntity target = null;
+                if (entity instanceof LivingEntity) {
+                    target = (LivingEntity) entity;
+                } else if (entity instanceof PartEntity<?>) {
+                    Entity parent = ((PartEntity<?>) entity).getParent();
+                    if (parent instanceof LivingEntity) {
+                        target = (LivingEntity) parent;
+                    }
+                }
+                if (target != null && target.level() instanceof ServerLevel) {
+                    ServerLevel s = (ServerLevel) target.level();
                     Entity owner = this.getOwner();
                     KillEnforcer.forceKill(target, s, owner);
                 }

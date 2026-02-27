@@ -208,7 +208,21 @@ public abstract class EntityMixin {
         Entity self = (Entity)(Object)this;
         UUID uuid = self.getUUID();
         if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) {
+            if (self.level().isClientSide()) {
+                try {
+                    if (EntityMethodHooks.checkLocalPlayerHasLAL()) {
+                        cir.setReturnValue(true);
+                        return;
+                    }
+                } catch (Throwable ignored) {}
+            }
             cir.setReturnValue(false);
+        } else if (self.level().isClientSide()) {
+            try {
+                if (EntityMethodHooks.checkLocalPlayerHasLAL()) {
+                    cir.setReturnValue(true);
+                }
+            } catch (Throwable ignored) {}
         }
     }
 

@@ -334,6 +334,7 @@ public class LALTransformer {
                 .build());
 
         add(new MethodMapping.Builder("m_21233_", "getMaxHealth", "()F", ReturnType.FLOAT)
+                .headReturn("shouldBlockGetMaxHealth", "replaceGetMaxHealth", "(Ljava/lang/Object;)F")
                 .callsite("getMaxHealth", "(Ljava/lang/Object;F)F")
                 .build());
 
@@ -354,20 +355,34 @@ public class LALTransformer {
                         "replaceHurt", "(Ljava/lang/Object;)Z")
                 .build());
 
-        add(new MethodMapping.Builder("m_156912_", "remove",
+        add(new MethodMapping.Builder("m_188355_", "remove",
                 "(Lnet/minecraft/world/level/entity/EntityAccess;)Z", ReturnType.BOOLEAN)
                 .headReturn("shouldBlockEntitySectionRemove", "(Ljava/lang/Object;Ljava/lang/Object;)Z",
                         "replaceHurt", "(Ljava/lang/Object;)Z")
                 .build());
 
-        add(new MethodMapping.Builder("m_156910_", "remove",
+        add(new MethodMapping.Builder("m_156912_", "remove",
                 "(Lnet/minecraft/world/entity/Entity;)V", ReturnType.VOID)
                 .headVoid("shouldBlockEntityTickListRemove", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_157580_", "stopTracking",
+                "(Lnet/minecraft/world/level/entity/EntityAccess;)V", ReturnType.VOID)
+                .headVoid("shouldBlockStopTracking", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
                 .build());
 
         add(new MethodMapping.Builder("m_135094_", "set",
                 "(Lnet/minecraft/network/syncher/EntityDataAccessor;Ljava/lang/Object;)V", ReturnType.VOID)
                 .headVoid("shouldBlockSynchedDataSet", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_142747_", "handlePlayerCombatKill",
+                "(Lnet/minecraft/network/protocol/game/ClientboundPlayerCombatKillPacket;)V", ReturnType.VOID)
+                .headVoid("shouldBlockHandlePlayerCombatKill", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_5765_", "setArrowCount", "(I)V", ReturnType.VOID)
+                .headVoid("shouldBlockSetArrowCount")
                 .build());
     }
 

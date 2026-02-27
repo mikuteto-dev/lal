@@ -294,6 +294,7 @@ public class KillEnforcer {
             int tick = level.getServer().getTickCount();
             UUID attackerUuid = attacker != null ? attacker.getUUID() : null;
             CombatRegistry.addToKillSet(uuid, attackerUuid, tick);
+            KillEnforcer.neutralizeProtectionFlags(target);
             target.setInvulnerable(false);
             target.invulnerableTime = 0;
             target.setNoGravity(false);
@@ -346,6 +347,10 @@ public class KillEnforcer {
                     KillEnforcer.setLastHurtByPlayer(target, attacker);
 
                     KillEnforcer.silentServerRemove((Entity)target, level);
+                    KillEnforcer.exileToVoid((Entity)target, level);
+                    KillEnforcer.invokeRemoveMethods((Entity)target);
+                    KillEnforcer.forceSetRemoved((Entity)target);
+                    try { jp.mikumiku.lal.network.LALNetwork.broadcastRemoveEntity(level, target.getId()); } catch (Throwable ignored2) {}
 
                     CombatRegistry.confirmDead(uuid);
                     return;
@@ -499,9 +504,96 @@ public class KillEnforcer {
             ServerLevel sl2 = (ServerLevel)level2;
 
             KillEnforcer.silentServerRemove((Entity)target, sl2);
+            KillEnforcer.exileToVoid((Entity)target, sl2);
+            KillEnforcer.invokeRemoveMethods((Entity)target);
+            KillEnforcer.forceSetRemoved((Entity)target);
+            try { jp.mikumiku.lal.network.LALNetwork.broadcastRemoveEntity(sl2, target.getId()); } catch (Throwable ignored) {}
         }
 
         KillEnforcer.restoreEventBus();
+    }
+
+    public static void neutralizeProtectionFlags(LivingEntity target) {
+        try {
+            SynchedEntityData entityData = target.getEntityData();
+            if (ENTITY_DATA_ITEMS_BY_ID != null) {
+                try {
+                    Object itemsById = ENTITY_DATA_ITEMS_BY_ID.get(entityData);
+                    if (itemsById != null) {
+                        if (itemsById.getClass().isArray()) {
+                            for (Object item : (Object[]) itemsById) {
+                                KillEnforcer.neutralizeDataItemBoolean(entityData, item);
+                            }
+                        } else {
+                            try {
+                                Method valuesMethod = itemsById.getClass().getMethod("values", new Class[0]);
+                                Object values = valuesMethod.invoke(itemsById, new Object[0]);
+                                if (values instanceof Iterable) {
+                                    for (Object item : (Iterable<?>) values) {
+                                        KillEnforcer.neutralizeDataItemBoolean(entityData, item);
+                                    }
+                                }
+                            } catch (Throwable ignored) {}
+                        }
+                    }
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
+        try {
+            for (Class<?> clazz = target.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
+                for (Field f : KillEnforcer.safeGetDeclaredFields(clazz)) {
+                    if (Modifier.isStatic(f.getModifiers()) || f.getType() != Boolean.TYPE) continue;
+                    String name = f.getName().toLowerCase();
+                    try {
+                        f.setAccessible(true);
+                        if (name.contains("bypass")) {
+                            f.setBoolean(target, true);
+                        } else if (name.contains("protect") || name.contains("barrier")
+                                || name.contains("immortal") || name.contains("invul")
+                                || name.contains("safe") || name.contains("muteki")
+                                || name.contains("fumetsu") || name.contains("soul")
+                                || name.contains("invincible") || name.contains("shield")
+                                || name.contains("overclock") || name.contains("dimension")) {
+                            f.setBoolean(target, false);
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
+        } catch (Throwable ignored) {}
+        try {
+            AttributeInstance maxHealthAttr = target.getAttribute(Attributes.MAX_HEALTH);
+            if (maxHealthAttr != null) {
+                for (AttributeModifier mod : maxHealthAttr.getModifiers().toArray(new AttributeModifier[0])) {
+                    maxHealthAttr.removeModifier(mod);
+                }
+                double base = maxHealthAttr.getBaseValue();
+                if (base > 1024.0 || base <= 0.0 || Double.isInfinite(base) || Double.isNaN(base)) {
+                    maxHealthAttr.setBaseValue(20.0);
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void neutralizeDataItemBoolean(SynchedEntityData entityData, Object dataItem) {
+        if (dataItem == null) return;
+        try {
+            Field valueField = null;
+            Field accessorField = null;
+            for (Field f : KillEnforcer.safeGetDeclaredFields(dataItem.getClass())) {
+                f.setAccessible(true);
+                if ((f.getName().equals("value") || f.getType() == Object.class) && valueField == null) {
+                    valueField = f;
+                }
+                if ((!f.getName().equals("accessor") && !f.getType().getSimpleName().contains("EntityDataAccessor")) || accessorField != null) continue;
+                accessorField = f;
+            }
+            if (valueField == null || accessorField == null) return;
+            Object value = valueField.get(dataItem);
+            if (!(value instanceof Boolean)) return;
+            Object accessor = accessorField.get(dataItem);
+            EntityDataAccessor<Boolean> typedAccessor = (EntityDataAccessor<Boolean>) accessor;
+            entityData.set(typedAccessor, false);
+        } catch (Throwable ignored) {}
     }
 
     private static void corruptAllHealthFields(LivingEntity target) {
@@ -947,6 +1039,8 @@ public class KillEnforcer {
             }
             catch (Throwable mob) {
             }
+            KillEnforcer.invokeRemoveMethods((Entity)target);
+            KillEnforcer.exileToVoid((Entity)target, level);
             KillEnforcer.setRemovalReason((Entity)target, Entity.RemovalReason.KILLED);
             if (!(target instanceof ServerPlayer)) {
                 RegistryCleaner.deleteFromAllRegistries((Entity)target, level);
@@ -1159,6 +1253,23 @@ public class KillEnforcer {
             catch (Throwable clazz) {
             }
             try {
+                for (Class<?> clazz2 = target.getClass(); clazz2 != null && clazz2 != Object.class; clazz2 = clazz2.getSuperclass()) {
+                    for (Field f2 : KillEnforcer.safeGetDeclaredFields(clazz2)) {
+                        if (Modifier.isStatic(f2.getModifiers())) continue;
+                        if (f2.getType().isPrimitive()) continue;
+                        try {
+                            f2.setAccessible(true);
+                            Object val = f2.get(target);
+                            if (val instanceof ServerBossEvent) {
+                                ServerBossEvent sbe = (ServerBossEvent) val;
+                                sbe.removeAllPlayers();
+                                sbe.setVisible(false);
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                }
+            } catch (Throwable ignored) {}
+            try {
                 ServerLevel sl;
                 CustomBossEvents customBossEvents;
                 Level targetLevel = target.level();
@@ -1182,6 +1293,84 @@ public class KillEnforcer {
             catch (Throwable throwable) {
             }
         }
+    }
+
+    private static void forceSetRemoved(Entity target) {
+        try {
+            if (ENTITY_SET_REMOVED != null) {
+                try {
+                    ENTITY_SET_REMOVED.invoke(target, Entity.RemovalReason.KILLED);
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
+        if (!target.isRemoved()) {
+            KillEnforcer.setRemovalReason(target, Entity.RemovalReason.KILLED);
+        }
+        try {
+            EntityInLevelCallback cb = target.levelCallback;
+            if (cb != null && cb != EntityInLevelCallback.NULL) {
+                cb.onRemove(Entity.RemovalReason.KILLED);
+                target.levelCallback = EntityInLevelCallback.NULL;
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void exileToVoid(Entity target, ServerLevel level) {
+        try {
+            EntityMethodHooks.setBypass(true);
+            try {
+                target.moveTo(1.0E9, 0.0, 0.0);
+            } catch (Throwable ignored) {}
+            EntityMethodHooks.setBypass(false);
+            for (Field f : safeGetDeclaredFields(Entity.class)) {
+                if (Modifier.isStatic(f.getModifiers())) continue;
+                if (f.getType() == Vec3.class) {
+                    try {
+                        f.setAccessible(true);
+                        f.set(target, new Vec3(1.0E9, 0.0, 0.0));
+                    } catch (Throwable ignored) {}
+                }
+            }
+            try {
+                ClientboundRemoveEntitiesPacket removePacket = new ClientboundRemoveEntitiesPacket(new int[]{target.getId()});
+                for (ServerPlayer player : level.players()) {
+                    try { player.connection.send((Packet) removePacket); } catch (Throwable ignored) {}
+                }
+            } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {
+            EntityMethodHooks.setBypass(false);
+        }
+    }
+
+    private static void invokeRemoveMethods(Entity target) {
+        try {
+            Set<String> invoked = new HashSet<>();
+            for (Class<?> clazz = target.getClass(); clazz != null && clazz != Entity.class && clazz != LivingEntity.class; clazz = clazz.getSuperclass()) {
+                if (clazz.getName().startsWith("net.minecraft.")) continue;
+                for (Method m : clazz.getDeclaredMethods()) {
+                    if (Modifier.isStatic(m.getModifiers())) continue;
+                    if (m.getParameterCount() != 0) continue;
+                    if (m.getReturnType() != void.class) continue;
+                    String name = m.getName().toLowerCase();
+                    if (!name.contains("remove") && !name.contains("discard") && !name.contains("destroy")
+                            && !name.contains("despawn") && !name.contains("delete")
+                            && !name.contains("kill") && !name.contains("die")
+                            && !name.contains("unload") && !name.contains("dispose")
+                            && !name.contains("cleanup") && !name.contains("invalidate")) continue;
+                    String key = m.getDeclaringClass().getName() + "#" + m.getName();
+                    if (!invoked.add(key)) continue;
+                    try {
+                        m.setAccessible(true);
+                        EntityMethodHooks.setBypass(true);
+                        try {
+                            m.invoke(target);
+                        } finally {
+                            EntityMethodHooks.setBypass(false);
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
     private static Field findAccessibleField(Class<?> clazz, String name) {
@@ -1839,7 +2028,13 @@ public class KillEnforcer {
                         }
                         if (!KillEnforcer.listContainsViaUnsafe(list, target)) continue;
                         System.out.println("[LAL] forceReplace static list: " + clazz.getSimpleName() + "." + f.getName());
-                        KillEnforcer.forceReplaceStaticField(f, new ArrayList());
+                        ArrayList filtered = new ArrayList(list.size());
+                        for (Object item : new ArrayList<>(list)) {
+                            if (item == null || item == target) continue;
+                            try { if (item.equals(target)) continue; } catch (Throwable t) {}
+                            filtered.add(item);
+                        }
+                        KillEnforcer.forceReplaceStaticField(f, filtered);
                         continue;
                     }
                     if (val instanceof Set) {
@@ -1921,7 +2116,13 @@ public class KillEnforcer {
                             }
                             KillEnforcer.forceRemoveFromList(list, target);
                             if (!KillEnforcer.listContainsViaUnsafe(list, target)) continue;
-                            KillEnforcer.forceReplaceInstanceField(f, obj, new ArrayList());
+                            ArrayList filteredInst = new ArrayList(list.size());
+                            for (Object item : new ArrayList<>(list)) {
+                                if (item == null || item == target) continue;
+                                try { if (item.equals(target)) continue; } catch (Throwable t) {}
+                                filteredInst.add(item);
+                            }
+                            KillEnforcer.forceReplaceInstanceField(f, obj, filteredInst);
                             continue;
                         }
                         if (val instanceof Set) {

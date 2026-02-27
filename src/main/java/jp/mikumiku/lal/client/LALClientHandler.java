@@ -94,6 +94,16 @@ public class LALClientHandler {
         event.register(BOOST_KEY);
     }
 
+    public static boolean isLocalPlayerHoldingLAL() {
+        try {
+            LocalPlayer player = Minecraft.getInstance().player;
+            if (player == null) return false;
+            return LALSwordItem.hasLALEquipment((Player) player);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     public static void handleRemoveEntity(int entityId) {
         try {
             Minecraft mc = Minecraft.getInstance();

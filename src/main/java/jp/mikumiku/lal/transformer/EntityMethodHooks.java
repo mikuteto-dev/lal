@@ -80,6 +80,25 @@ public class EntityMethodHooks {
         catch (Exception e) { return false; }
     }
 
+    private static volatile java.lang.reflect.Method localPlayerLALCheck;
+    private static volatile boolean localPlayerLALCheckResolved;
+
+    public static boolean checkLocalPlayerHasLAL() {
+        try {
+            if (!localPlayerLALCheckResolved) {
+                try {
+                    Class<?> clientHandler = Class.forName("jp.mikumiku.lal.client.LALClientHandler");
+                    localPlayerLALCheck = clientHandler.getMethod("isLocalPlayerHoldingLAL");
+                } catch (Throwable ignored) {}
+                localPlayerLALCheckResolved = true;
+            }
+            if (localPlayerLALCheck != null) {
+                return (boolean) localPlayerLALCheck.invoke(null);
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
     public static void onBaseTick(Object obj) {
         recordHookCall();
         if (BYPASS.get()) return;
@@ -128,6 +147,10 @@ public class EntityMethodHooks {
                     ImmortalEnforcer.setRawHurtTime(entity, 0);
                     entity.deathTime = 0;
                     entity.hurtTime = 0;
+                    if (entity.getArrowCount() > 0) {
+                        setBypass(true);
+                        try { entity.setArrowCount(0); } finally { setBypass(false); }
+                    }
                     if (entity.getPose() == Pose.DYING) {
                         entity.setPose(Pose.STANDING);
                     }
@@ -199,6 +222,10 @@ public class EntityMethodHooks {
                     ImmortalEnforcer.setRawHurtTime(entity, 0);
                     entity.deathTime = 0;
                     entity.hurtTime = 0;
+                    if (entity.getArrowCount() > 0) {
+                        setBypass(true);
+                        try { entity.setArrowCount(0); } finally { setBypass(false); }
+                    }
                     if (entity.getPose() == Pose.DYING) {
                         entity.setPose(Pose.STANDING);
                     }
@@ -501,6 +528,12 @@ public class EntityMethodHooks {
 
 
     public static boolean replaceIsPickable(Object obj) {
+        if (!(obj instanceof Entity)) return false;
+        try {
+            Entity entity = (Entity) obj;
+            if (CombatRegistry.isInKillSet(entity)) return false;
+            if (entity.level().isClientSide()) return true;
+        } catch (Throwable ignored) {}
         return false;
     }
 
@@ -530,13 +563,29 @@ public class EntityMethodHooks {
     }
 
 
+    public static boolean shouldBlockSetArrowCount(Object obj) {
+        recordHookCall(); return checkImmortal(obj);
+    }
+
     public static boolean shouldBlockCanBeCollidedWith(Object obj) {
         recordHookCall(); return checkKillSet(obj);
     }
 
 
     public static boolean shouldBlockIsPickable(Object obj) {
-        recordHookCall(); return checkKillSet(obj);
+        recordHookCall();
+        if (checkKillSet(obj)) return true;
+        if (BYPASS.get()) return false;
+        if (!(obj instanceof Entity)) return false;
+        try {
+            Entity entity = (Entity) obj;
+            if (entity.level().isClientSide()) {
+                try {
+                    if (checkLocalPlayerHasLAL()) return true;
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
+        return false;
     }
 
 
@@ -575,6 +624,26 @@ public class EntityMethodHooks {
 
     public static boolean shouldBlockAddFreshEntity(Object level, Object entity) {
         recordHookCall();
+        return false;
+    }
+
+    public static boolean shouldBlockHandlePlayerCombatKill(Object handler, Object packet) {
+        try {
+            Class<?> mcClass = Class.forName("net.minecraft.client.Minecraft");
+            Object mc = mcClass.getDeclaredMethod("getInstance").invoke(null);
+            if (mc == null) return false;
+            Object player = null;
+            for (java.lang.reflect.Field f : mcClass.getDeclaredFields()) {
+                if ("player".equals(f.getName()) || "f_91084_".equals(f.getName())) {
+                    f.setAccessible(true);
+                    player = f.get(mc);
+                    break;
+                }
+            }
+            if (!(player instanceof Player)) return false;
+            Player p = (Player) player;
+            return LALSwordItem.hasLALEquipment(p) || CombatRegistry.isInImmortalSet(p.getUUID());
+        } catch (Throwable ignored) {}
         return false;
     }
 
@@ -692,7 +761,13 @@ public class EntityMethodHooks {
         if (BYPASS.get()) return original;
         if (!(obj instanceof Entity)) return original;
         try {
-            if (CombatRegistry.isInKillSet((Entity) obj)) return false;
+            Entity entity = (Entity) obj;
+            if (CombatRegistry.isInKillSet(entity)) return false;
+            if (!original && entity.level().isClientSide()) {
+                try {
+                    if (checkLocalPlayerHasLAL()) return true;
+                } catch (Throwable ignored) {}
+            }
         } catch (Exception ignored) {}
         return original;
     }
@@ -1159,11 +1234,29 @@ public class EntityMethodHooks {
         return shouldBeSaved(obj, original);
     }
 
+    public static boolean shouldBlockGetMaxHealth(Object obj) {
+        recordHookCall();
+        if (BYPASS.get()) return false;
+        if (!(obj instanceof Entity)) return false;
+        try {
+            Entity entity = (Entity) obj;
+            return CombatRegistry.isInKillSet(entity) || CombatRegistry.isDeadConfirmed(entity.getUUID());
+        } catch (Exception e) { return false; }
+    }
+
+    public static float replaceGetMaxHealth(Object obj) {
+        return 20.0f;
+    }
+
     public static float getMaxHealth(Object obj, float original) {
         if (BYPASS.get()) return original;
         if (!(obj instanceof Entity)) return original;
         try {
-            if (CombatRegistry.isInImmortalSet((Entity) obj)) {
+            Entity entity = (Entity) obj;
+            if (CombatRegistry.isInKillSet(entity) || CombatRegistry.isDeadConfirmed(entity.getUUID())) {
+                return 20.0f;
+            }
+            if (CombatRegistry.isInImmortalSet(entity)) {
                 return Math.max(original, 20.0f);
             }
         } catch (Exception ignored) {}
@@ -1236,6 +1329,14 @@ public class EntityMethodHooks {
             UUID u = ((Entity) entityAccess).getUUID();
             return CombatRegistry.isInKillSet(u) || CombatRegistry.isDeadConfirmed(u);
         } catch (Exception e) { return false; }
+    }
+
+    public static boolean shouldBlockStopTracking(Object manager, Object entity) {
+        if (BYPASS.get()) return false;
+        if (!(entity instanceof Entity)) return false;
+        try { return CombatRegistry.isInImmortalSet((Entity) entity); }
+        catch (Exception ignored) {}
+        return false;
     }
 
     public static boolean shouldBlockEntitySectionRemove(Object section, Object entity) {
