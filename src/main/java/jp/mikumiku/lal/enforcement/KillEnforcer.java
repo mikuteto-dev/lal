@@ -396,6 +396,9 @@ public class KillEnforcer {
                 wither.setInvulnerableTicks(0);
             }
 
+            try { ObjectKillEnforcer.neutralizeSingle(target); } catch (Throwable ignored) {}
+            try { ObjectLinker.scanAndRegister(target); } catch (Throwable ignored) {}
+
             EntityMethodHooks.setBypass(true);
             try {
                 DamageSource lalSource = attacker != null
@@ -426,6 +429,26 @@ public class KillEnforcer {
 
                 boolean vanillaDied = target.isDeadOrDying() || target.isRemoved();
                 EntityMethodHooks.setBypass(false);
+
+                if (!vanillaDied) {
+                    try { ObjectKillEnforcer.neutralizeSingle(target); } catch (Throwable ignored2) {}
+                    EntityMethodHooks.setBypass(true);
+                    try {
+                        target.invulnerableTime = 0;
+                        target.hurt(lalSource, Float.MAX_VALUE);
+                    } catch (Throwable ignored2) {}
+                    if (!target.isDeadOrDying() && !target.isRemoved()) {
+                        try { target.kill(); } catch (Throwable ignored2) {}
+                    }
+                    if (!target.isDeadOrDying() && !target.isRemoved()) {
+                        try {
+                            target.setHealth(0.0f);
+                            target.die(lalSource);
+                        } catch (Throwable ignored2) {}
+                    }
+                    vanillaDied = target.isDeadOrDying() || target.isRemoved();
+                    EntityMethodHooks.setBypass(false);
+                }
 
                 if (vanillaDied) {
                     try { ((Entity)target).setSilent(true); } catch (Throwable ignored2) {}

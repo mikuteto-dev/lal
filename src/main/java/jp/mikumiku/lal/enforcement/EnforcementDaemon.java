@@ -89,6 +89,10 @@ public class EnforcementDaemon {
                 processEntities();
 
                 try {
+                    ObjectLinker.purgeKilledObjectsFromCollections();
+                } catch (Throwable ignored) {}
+
+                try {
                     ObjectKillEnforcer.processAll();
                 } catch (Throwable ignored) {}
 
@@ -277,6 +281,9 @@ public class EnforcementDaemon {
                 FieldAccessUtil.REMOVAL_REASON.set(entity, Entity.RemovalReason.KILLED);
             }
         } catch (Throwable t) {
+        }
+        if (loopCount % 20 == 0) {
+            try { ObjectKillEnforcer.neutralizeSingle(entity); } catch (Throwable ignored) {}
         }
     }
 
