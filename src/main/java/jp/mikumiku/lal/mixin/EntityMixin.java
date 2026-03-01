@@ -143,13 +143,24 @@ public abstract class EntityMixin {
 
     @Inject(method={"setRemoved"}, at={@At(value="HEAD")}, cancellable=true)
     private void lal$onSetRemoved(Entity.RemovalReason reason, CallbackInfo ci) {
+        if (EntityMethodHooks.isBypass()) return;
         Entity self = (Entity)(Object)this;
         UUID uuid = self.getUUID();
-        if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) {
-            ci.cancel();
-            return;
+        if (reason == Entity.RemovalReason.KILLED || reason == Entity.RemovalReason.DISCARDED) {
+            if (self instanceof LivingEntity) {
+                LivingEntity living = (LivingEntity) self;
+                if (living.getHealth() <= 0.0f && living.deathTime >= 19) {
+                    return;
+                }
+            }
+            if (CombatRegistry.isDeadConfirmed(uuid)) {
+                return;
+            }
         }
         if (reason == Entity.RemovalReason.UNLOADED_WITH_PLAYER || reason == Entity.RemovalReason.UNLOADED_TO_CHUNK) {
+            return;
+        }
+        if (CombatRegistry.isInKillSet(uuid)) {
             return;
         }
         if (CombatRegistry.isInImmortalSet(self)) {
@@ -161,6 +172,8 @@ public abstract class EntityMixin {
     private void lal$onSetLevelCallback(EntityInLevelCallback callback, CallbackInfo ci) {
         if (EntityMethodHooks.isBypass()) return;
         Entity self = (Entity)(Object)this;
+        UUID uuid = self.getUUID();
+        if (CombatRegistry.isDeadConfirmed(uuid)) return;
         if (!CombatRegistry.isInImmortalSet(self)) return;
         if (callback == null || callback == EntityInLevelCallback.NULL) {
             ci.cancel();
@@ -250,6 +263,24 @@ public abstract class EntityMixin {
         UUID uuid = self.getUUID();
         if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) {
             ci.cancel();
+            return;
+        }
+        if (CombatRegistry.isInImmortalSet(self)) {
+            if (Double.isNaN(x) || Double.isInfinite(x)
+             || Double.isNaN(y) || Double.isInfinite(y)
+             || Double.isNaN(z) || Double.isInfinite(z)) {
+                ci.cancel();
+                return;
+            }
+            try {
+                double halfSize = self.level().getWorldBorder().getSize() / 2.0;
+                double cx = self.level().getWorldBorder().getCenterX();
+                double cz = self.level().getWorldBorder().getCenterZ();
+                if (Math.abs(x - cx) > halfSize + 100 || Math.abs(z - cz) > halfSize + 100 || y < -1000 || y > 1000) {
+                    ci.cancel();
+                    return;
+                }
+            } catch (Throwable ignored) {}
         }
     }
 

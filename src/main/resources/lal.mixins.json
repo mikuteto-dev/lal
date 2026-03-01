@@ -21,7 +21,8 @@
   "client": [
     "MinecraftMixin",
     "ScreenEffectRendererMixin",
-    "ClientPacketListenerMixin"
+    "ClientPacketListenerMixin",
+    "LivingEntityRendererMixin"
   ],
   "injectors": {
     "defaultRequire": 1

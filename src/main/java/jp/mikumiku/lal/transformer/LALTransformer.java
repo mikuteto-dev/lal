@@ -277,8 +277,8 @@ public class LALTransformer {
                 .headVoid("shouldBlockMove")
                 .build());
 
-        add(new MethodMapping.Builder("m_20344_", "setPosRaw", "(DDD)V", ReturnType.VOID)
-                .headVoid("shouldBlockSetPosRaw")
+        add(new MethodMapping.Builder("m_20343_", "setPosRaw", "(DDD)V", ReturnType.VOID)
+                .headVoid("shouldBlockSetPosRaw", "(Ljava/lang/Object;DDD)Z")
                 .build());
 
         add(new MethodMapping.Builder("m_20256_", "setDeltaMovement", "(Lnet/minecraft/world/phys/Vec3;)V", ReturnType.VOID)
@@ -349,7 +349,7 @@ public class LALTransformer {
                 .headVoid("shouldBlockSetLevelCallback", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
                 .build());
 
-        add(new MethodMapping.Builder("m_183508_", "addEntityUuid",
+        add(new MethodMapping.Builder("m_157557_", "addEntityUuid",
                 "(Lnet/minecraft/world/level/entity/EntityAccess;)Z", ReturnType.BOOLEAN)
                 .headReturn("shouldBlockAddEntityUuid", "(Ljava/lang/Object;Ljava/lang/Object;)Z",
                         "replaceHurt", "(Ljava/lang/Object;)Z")
@@ -371,7 +371,7 @@ public class LALTransformer {
                 .headVoid("shouldBlockStopTracking", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
                 .build());
 
-        add(new MethodMapping.Builder("m_135094_", "set",
+        add(new MethodMapping.Builder("m_135381_", "set",
                 "(Lnet/minecraft/network/syncher/EntityDataAccessor;Ljava/lang/Object;)V", ReturnType.VOID)
                 .headVoid("shouldBlockSynchedDataSet", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z")
                 .build());
@@ -381,7 +381,7 @@ public class LALTransformer {
                 .headVoid("shouldBlockHandlePlayerCombatKill", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
                 .build());
 
-        add(new MethodMapping.Builder("m_5765_", "setArrowCount", "(I)V", ReturnType.VOID)
+        add(new MethodMapping.Builder("m_21317_", "setArrowCount", "(I)V", ReturnType.VOID)
                 .headVoid("shouldBlockSetArrowCount")
                 .build());
     }
@@ -588,6 +588,12 @@ public class LALTransformer {
         } else if ("(Ljava/lang/Object;Ljava/lang/Object;)Z".equals(desc)) {
             patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
             patch.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS, mapping.headJudgeMethod, desc, false));
+        } else if ("(Ljava/lang/Object;DDD)Z".equals(desc)) {
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            patch.add(new VarInsnNode(Opcodes.DLOAD, 1));
+            patch.add(new VarInsnNode(Opcodes.DLOAD, 3));
+            patch.add(new VarInsnNode(Opcodes.DLOAD, 5));
             patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS, mapping.headJudgeMethod, desc, false));
         } else {
             patch.add(new VarInsnNode(Opcodes.ALOAD, 0));

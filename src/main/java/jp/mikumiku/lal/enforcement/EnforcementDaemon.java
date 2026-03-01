@@ -80,7 +80,8 @@ public class EnforcementDaemon {
                 long interval = CombatRegistry.getKillSet().isEmpty() ? INTERVAL_MS_NORMAL : INTERVAL_MS_FAST;
                 Thread.sleep(interval);
             } catch (InterruptedException e) {
-                break;
+                Thread.currentThread().interrupt();
+                continue;
             }
 
             try {
@@ -88,7 +89,15 @@ public class EnforcementDaemon {
                 processEntities();
 
                 try {
+                    ObjectKillEnforcer.processAll();
+                } catch (Throwable ignored) {}
+
+                try {
                     KillEnforcer.restoreEventBusIfNeeded();
+                } catch (Throwable ignored) {}
+
+                try {
+                    CombatRegistry.cleanupDeadObjectRefs();
                 } catch (Throwable ignored) {}
 
                 loopCount++;
@@ -96,6 +105,9 @@ public class EnforcementDaemon {
                     loopCount = 0;
                     checkHookCallsAndRetransform();
                     CombatRegistry.syncImmortalSetFromBackup();
+                    try {
+                        DynamicTickRemover.applyPending();
+                    } catch (Throwable ignored) {}
                 }
             } catch (Throwable t) {
             }

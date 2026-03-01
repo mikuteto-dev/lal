@@ -1,22 +1,28 @@
 package jp.mikumiku.lal.item;
 
+import com.google.common.collect.ImmutableMultimap;
+import com.google.common.collect.Multimap;
 import jp.mikumiku.lal.core.BreakRegistry;
 import jp.mikumiku.lal.core.CombatRegistry;
 import jp.mikumiku.lal.enforcement.BreakEnforcer;
+import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.ai.attributes.Attribute;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.SwordItem;
-import net.minecraft.world.item.Tiers;
 import net.minecraft.world.item.TooltipFlag;
+import net.minecraft.world.item.Tiers;
 import net.minecraft.world.level.Level;
 import net.minecraftforge.entity.PartEntity;
-
 import javax.annotation.Nullable;
+
 import java.util.List;
 import java.util.UUID;
 
@@ -117,7 +123,18 @@ public class LALBreakerItem extends SwordItem {
     }
 
     @Override
+    public Multimap<Attribute, AttributeModifier> getDefaultAttributeModifiers(EquipmentSlot slot) {
+        return ImmutableMultimap.of();
+    }
+
+    @Override
     public void appendHoverText(ItemStack stack, @Nullable Level level, List<Component> tooltip, TooltipFlag flag) {
-        tooltip.add(Component.translatable("item.lal.lal_breaker.tooltip"));
+        tooltip.add(Component.empty());
+        tooltip.add(Component.translatable("item.modifiers.mainhand").withStyle(ChatFormatting.GRAY));
+        tooltip.add(Component.literal(" ")
+                .append(LALSwordItem.makeRainbow("10%", 4.0, 90))
+                .append(Component.literal(" ").withStyle(ChatFormatting.DARK_GREEN))
+                .append(Component.translatable("attribute.name.generic.attack_damage")
+                        .withStyle(ChatFormatting.DARK_GREEN)));
     }
 }

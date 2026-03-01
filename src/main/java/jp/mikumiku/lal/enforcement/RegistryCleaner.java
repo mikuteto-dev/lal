@@ -42,7 +42,7 @@ public class RegistryCleaner {
                 uuid = target.getUUID();
                 id = target.getId();
                 try {
-                    target.setRemoved(Entity.RemovalReason.KILLED);
+                    KillEnforcer.forceSetRemoved(target);
                 }
                 catch (Throwable throwable) {
                     }
@@ -122,6 +122,18 @@ public class RegistryCleaner {
             }
             catch (Throwable tickList) {
             }
+        }
+        try {
+            Object tickList = RegistryCleaner.findField(level, "entityTickList", "EntityTickList");
+            if (tickList != null) {
+                Object passiveMap = RegistryCleaner.findField(tickList, "passive", "Int2Object");
+                if (passiveMap != null) {
+                    Method removeMethod = passiveMap.getClass().getMethod("remove", Integer.TYPE);
+                    removeMethod.invoke(passiveMap, id);
+                }
+            }
+        }
+        catch (Throwable ignored) {
         }
         try {
             Object seenBy;
@@ -229,7 +241,7 @@ public class RegistryCleaner {
         catch (Throwable throwable) {
         }
         try {
-            target.discard();
+            KillEnforcer.forceDiscard(target);
         }
         catch (Throwable throwable) {
         }
@@ -243,17 +255,6 @@ public class RegistryCleaner {
     private static void removeFromSectionByClass(Object section, Entity target) {
         try {
             RegistryCleaner.removeFromAllStoragesInSection(section, target);
-            try {
-                Method removeMethod = section.getClass().getMethod("remove", Entity.class);
-                removeMethod.invoke(section, target);
-            }
-            catch (NoSuchMethodException e) {
-                try {
-                    Method removeMethod = section.getClass().getMethod("remove", Object.class);
-                    removeMethod.invoke(section, target);
-                }
-                catch (Throwable throwable) {}
-            }
         }
         catch (Throwable throwable) {
         }
@@ -509,12 +510,12 @@ public class RegistryCleaner {
         m.put("sectionStorage", new String[]{"sectionStorage", "f_157495_"});
         m.put("visibleEntityStorage", new String[]{"visibleEntityStorage", "f_157494_"});
         m.put("knownUuids", new String[]{"knownUuids", "f_157491_"});
-        m.put("entityMap", new String[]{"entityMap", "f_140175_"});
+        m.put("entityMap", new String[]{"entityMap", "f_140150_"});
         m.put("entityTickList", new String[]{"entityTickList", "f_143243_"});
         m.put("active", new String[]{"active", "f_156903_"});
         m.put("passive", new String[]{"passive", "f_156904_"});
         m.put("storage", new String[]{"storage", "f_188348_"});
-        m.put("byClass", new String[]{"byClass", "f_13524_"});
+        m.put("byClass", new String[]{"byClass", "f_13527_"});
         m.put("allInstances", new String[]{"allInstances", "f_13525_"});
         m.put("byUuid", new String[]{"byUuid", "f_156808_"});
         m.put("byId", new String[]{"byId", "f_156807_"});

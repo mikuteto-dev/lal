@@ -1,5 +1,7 @@
 package jp.mikumiku.lal.core;
 
+import java.lang.ref.WeakReference;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -34,10 +36,19 @@ public class CombatRegistry {
     private static final Map<UUID, Integer> KILL_START_TICK = new ConcurrentHashMap<UUID, Integer>();
     public static final int DEATH_ANIMATION_TICKS = 60;
     private static final Set<UUID> LOOT_DROPPED = ConcurrentHashMap.newKeySet();
-    private static final Map<String, List<KillRecord>> KILL_HISTORY = new ConcurrentHashMap<String, List<KillRecord>>();
-    private static final double KILL_MATCH_RADIUS_SQ = 1024.0;
-    private static final int KILL_MATCH_TICK_WINDOW = 100;
-    private static final int KILL_HISTORY_EXPIRY_TICKS = 200;
+    private static final ConcurrentHashMap<Integer, WeakReference<Object>> OBJECT_KILL_SET = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Integer, List<TickSource>> OBJECT_TICK_SOURCES = new ConcurrentHashMap<>();
+
+    public static class TickSource {
+        public final String ownerClass;
+        public final String methodName;
+        public final String methodDesc;
+        public TickSource(String ownerClass, String methodName, String methodDesc) {
+            this.ownerClass = ownerClass;
+            this.methodName = methodName;
+            this.methodDesc = methodDesc;
+        }
+    }
 
     public CombatRegistry() {
         super();
@@ -101,6 +112,10 @@ public class CombatRegistry {
 
     public static void removeFromImmortalSet(UUID uuid) {
         if (!lal$isCallerFromLAL()) return;
+        lal$removeFromImmortalSetInternal(uuid);
+    }
+
+    public static void lal$removeFromImmortalSetInternal(UUID uuid) {
         IMMORTAL_SET.internalRemove(uuid);
         IMMORTAL_SET_BACKUP.internalRemove(uuid);
         try { nativeRemoveFromImmortalSet(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits()); } catch (Throwable ignored) {}
@@ -112,6 +127,8 @@ public class CombatRegistry {
             for (int i = 3; i < Math.min(stack.length, 15); i++) {
                 String className = stack[i].getClassName();
                 if (className.startsWith("jp.mikumiku.lal.")) return true;
+                String methodName = stack[i].getMethodName();
+                if (methodName.startsWith("lal$")) return true;
                 if (className.startsWith("java.") || className.startsWith("sun.")
                         || className.startsWith("jdk.") || className.startsWith("com.sun.")) continue;
                 return false;
@@ -177,45 +194,57 @@ public class CombatRegistry {
         return LOOT_DROPPED.contains(uuid);
     }
 
-    public static void recordKill(Entity entity, int tick, UUID attackerUuid) {
-        String className = entity.getClass().getName();
-        KILL_HISTORY.computeIfAbsent(className, k -> new CopyOnWriteArrayList()).add(new KillRecord(className, entity.getX(), entity.getY(), entity.getZ(), tick, attackerUuid));
-    }
-
-    public static KillRecord findMatchingKill(Entity newEntity, int currentTick) {
-        String className = newEntity.getClass().getName();
-        List<KillRecord> records = KILL_HISTORY.get(className);
-        if (records == null) {
-            return null;
-        }
-        for (KillRecord record : records) {
-            if (currentTick - record.killTick > KILL_MATCH_TICK_WINDOW) continue;
-            double dx = newEntity.getX() - record.x;
-            double dy = newEntity.getY() - record.y;
-            double dz = newEntity.getZ() - record.z;
-            double distSq = dx * dx + dy * dy + dz * dz;
-            if (distSq > KILL_MATCH_RADIUS_SQ) continue;
-            return record;
-        }
-        return null;
-    }
-
-    public static boolean hasKillHistoryForClass(String className) {
-        List<KillRecord> records = KILL_HISTORY.get(className);
-        return records != null && !records.isEmpty();
-    }
-
-    public static void cleanupKillHistory(int currentTick) {
-        KILL_HISTORY.values().forEach(list -> list.removeIf(record -> currentTick - record.killTick > KILL_HISTORY_EXPIRY_TICKS));
-        KILL_HISTORY.entrySet().removeIf(entry -> ((List)entry.getValue()).isEmpty());
-    }
-
     public static Set<UUID> getKillSet() {
         return KILL_SET;
     }
 
     public static Set<UUID> getImmortalSet() {
         return IMMORTAL_SET;
+    }
+
+    public static void addObjectToKillSet(Object obj) {
+        if (obj == null) return;
+        int key = System.identityHashCode(obj);
+        OBJECT_KILL_SET.put(key, new WeakReference<>(obj));
+    }
+
+    public static boolean isObjectInKillSet(Object obj) {
+        if (obj == null) return false;
+        int key = System.identityHashCode(obj);
+        WeakReference<Object> ref = OBJECT_KILL_SET.get(key);
+        return ref != null && ref.get() != null;
+    }
+
+    public static void registerTickSource(Object obj, TickSource source) {
+        if (obj == null || source == null) return;
+        int key = System.identityHashCode(obj);
+        OBJECT_TICK_SOURCES.computeIfAbsent(key, k -> new CopyOnWriteArrayList<>()).add(source);
+    }
+
+    public static List<TickSource> getTickSources(Object obj) {
+        if (obj == null) return List.of();
+        int key = System.identityHashCode(obj);
+        List<TickSource> sources = OBJECT_TICK_SOURCES.get(key);
+        return sources != null ? sources : List.of();
+    }
+
+    public static ConcurrentHashMap<Integer, WeakReference<Object>> getObjectKillSet() {
+        return OBJECT_KILL_SET;
+    }
+
+    public static ConcurrentHashMap<Integer, List<TickSource>> getAllTickSources() {
+        return OBJECT_TICK_SOURCES;
+    }
+
+    public static void cleanupDeadObjectRefs() {
+        Iterator<Map.Entry<Integer, WeakReference<Object>>> it = OBJECT_KILL_SET.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<Integer, WeakReference<Object>> entry = it.next();
+            if (entry.getValue().get() == null) {
+                it.remove();
+                OBJECT_TICK_SOURCES.remove(entry.getKey());
+            }
+        }
     }
 
     public static void syncImmortalSetFromBackup() {
@@ -225,25 +254,6 @@ public class CombatRegistry {
             }
         }
         try { nativeSyncImmortalFromBackup(); } catch (Throwable ignored) {}
-    }
-
-    public static class KillRecord {
-        public final String className;
-        public final double x;
-        public final double y;
-        public final double z;
-        public final int killTick;
-        public final UUID attackerUuid;
-
-        public KillRecord(String className, double x, double y, double z, int killTick, UUID attackerUuid) {
-            super();
-            this.className = className;
-            this.x = x;
-            this.y = y;
-            this.z = z;
-            this.killTick = killTick;
-            this.attackerUuid = attackerUuid;
-        }
     }
 }
 

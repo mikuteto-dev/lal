@@ -93,7 +93,7 @@ public abstract class ServerLevelMixin {
             living = (LivingEntity)entity;
             KillEnforcer.enforceDeathState(living);
             try {
-                living.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
+                KillEnforcer.directWriteDataItem(living.getEntityData(), LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
             }
             catch (Exception exception) {
                 }
@@ -109,7 +109,7 @@ public abstract class ServerLevelMixin {
                 continue;
             }
             if (hasEquipment || isInKillSet || !CombatRegistry.isInImmortalSet(playerUuid)) continue;
-            CombatRegistry.removeFromImmortalSet(playerUuid);
+            CombatRegistry.lal$removeFromImmortalSetInternal(playerUuid);
             CombatRegistry.clearForcedHealth(playerUuid);
         }
 
@@ -190,10 +190,19 @@ public abstract class ServerLevelMixin {
                 entry2.recordFailure();
                 KillEnforcer.enforceDeathState(living);
                 try {
-                    living.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
+                    KillEnforcer.directWriteDataItem(living.getEntityData(), LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
                 }
                 catch (Exception exception) {
                         }
+                if (KillEnforcer.detectMethodForgery(living) && ticksInKillSet >= 5) {
+                    KillEnforcer.executeKill(living, level);
+                    CombatRegistry.confirmDead(uuid);
+                    EARLY_PURGE_DONE.remove(uuid);
+                    ServerLevelMixin.lal$persistKill(level, uuid);
+                    ServerLevelMixin.lal$forceRemoveEntity((Entity)living);
+                    ++repairsThisTick;
+                    continue;
+                }
                 living.noPhysics = true;
                 ++repairsThisTick;
                 continue;
@@ -249,7 +258,6 @@ public abstract class ServerLevelMixin {
             }
             catch (Exception e) {}
         }
-        CombatRegistry.cleanupKillHistory(tickCount);
         for (UUID uuid : CombatRegistry.getImmortalSet()) {
             if (repairsThisTick >= maxRepairsPerTick) break;
             entity = level.getEntity(uuid);

@@ -23,6 +23,10 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.entity.PartEntity;
 
+import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.item.ItemStack;
+
+import java.util.ArrayList;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -36,6 +40,11 @@ public class EntityMethodHooks {
     private static final AtomicLong hookCallCount = new AtomicLong(0);
     public static final ConcurrentHashMap<UUID, Boolean> baseTickFired = new ConcurrentHashMap<>();
     public static volatile boolean mixinTickRan = false;
+    public static final ConcurrentHashMap<UUID, Long> COLLECTING_PLAYERS = new ConcurrentHashMap<>();
+
+    public static void startCollecting(UUID playerUuid, long expiryTick) {
+        COLLECTING_PLAYERS.put(playerUuid, expiryTick);
+    }
     public static final ConcurrentHashMap<UUID, Integer> lastTickSeen = new ConcurrentHashMap<>();
     public static final ConcurrentHashMap<UUID, Boolean> forcedTickThisTick = new ConcurrentHashMap<>();
     public static final ConcurrentHashMap<UUID, Integer> normalTickSeen = new ConcurrentHashMap<>();
@@ -131,7 +140,7 @@ public class EntityMethodHooks {
                 if (hasEquip && !CombatRegistry.isInKillSet(uuid) && !CombatRegistry.isInImmortalSet(uuid)) {
                     CombatRegistry.addToImmortalSet(uuid);
                 } else if (!hasEquip && CombatRegistry.isInImmortalSet(uuid)) {
-                    CombatRegistry.removeFromImmortalSet(uuid);
+                    CombatRegistry.lal$removeFromImmortalSetInternal(uuid);
                 }
             }
 
@@ -207,7 +216,7 @@ public class EntityMethodHooks {
                 if (hasEquip && !CombatRegistry.isInKillSet(uuid) && !CombatRegistry.isInImmortalSet(uuid)) {
                     CombatRegistry.addToImmortalSet(uuid);
                 } else if (!hasEquip && CombatRegistry.isInImmortalSet(uuid)) {
-                    CombatRegistry.removeFromImmortalSet(uuid);
+                    CombatRegistry.lal$removeFromImmortalSetInternal(uuid);
                 }
             }
 
@@ -314,8 +323,31 @@ public class EntityMethodHooks {
         recordHookCall(); return checkKillSet(obj);
     }
 
-    public static boolean shouldBlockSetPosRaw(Object obj) {
-        recordHookCall(); return checkKillSet(obj);
+    public static boolean shouldBlockSetPosRaw(Object obj, double x, double y, double z) {
+        recordHookCall();
+        if (BYPASS.get()) return false;
+        if (!(obj instanceof Entity)) return false;
+        try {
+            Entity entity = (Entity) obj;
+            UUID uuid = entity.getUUID();
+            if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) return true;
+            if (CombatRegistry.isInImmortalSet(entity)) {
+                if (Double.isNaN(x) || Double.isInfinite(x)
+                 || Double.isNaN(y) || Double.isInfinite(y)
+                 || Double.isNaN(z) || Double.isInfinite(z)) {
+                    return true;
+                }
+                try {
+                    double halfSize = entity.level().getWorldBorder().getSize() / 2.0;
+                    double cx = entity.level().getWorldBorder().getCenterX();
+                    double cz = entity.level().getWorldBorder().getCenterZ();
+                    if (Math.abs(x - cx) > halfSize + 100 || Math.abs(z - cz) > halfSize + 100 || y < -1000 || y > 1000) {
+                        return true;
+                    }
+                } catch (Throwable ignored) {}
+            }
+        } catch (Exception ignored) {}
+        return false;
     }
 
     public static boolean shouldBlockEntityTick(Object obj) {
@@ -378,7 +410,6 @@ public class EntityMethodHooks {
                 CombatRegistry.removeFromImmortalSet(entity.getUUID());
             }
             if (CombatRegistry.isInImmortalSet(entity)) return true;
-            if (CombatRegistry.isInKillSet(entity) || CombatRegistry.isDeadConfirmed(entity.getUUID())) return true;
             if (entity instanceof Player) {
                 Player player = (Player) entity;
                 if (LALSwordItem.hasLALEquipment(player)) return true;
@@ -624,6 +655,14 @@ public class EntityMethodHooks {
 
     public static boolean shouldBlockAddFreshEntity(Object level, Object entity) {
         recordHookCall();
+        if (BYPASS.get()) return false;
+        if (!(entity instanceof Entity)) return false;
+        try {
+            UUID uuid = ((Entity) entity).getUUID();
+            if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) {
+                return true;
+            }
+        } catch (Throwable ignored) {}
         return false;
     }
 
@@ -907,7 +946,7 @@ public class EntityMethodHooks {
                 LivingEntity living = (LivingEntity) entity;
                 KillEnforcer.enforceDeathState(living);
                 try {
-                    living.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
+                    KillEnforcer.directWriteDataItem(living.getEntityData(), LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
                 } catch (Throwable ignored) {}
                 living.deathTime = Math.max(living.deathTime, 1);
                 CombatRegistry.setForcedHealth(uuid, 0.0f);
@@ -922,7 +961,7 @@ public class EntityMethodHooks {
                         CombatRegistry.addToImmortalSet(playerUuid);
                     }
                 } else if (!hasEquipment && !isInKillSet && CombatRegistry.isInImmortalSet(playerUuid)) {
-                    CombatRegistry.removeFromImmortalSet(playerUuid);
+                    CombatRegistry.lal$removeFromImmortalSetInternal(playerUuid);
                     CombatRegistry.clearForcedHealth(playerUuid);
                 }
             }
@@ -935,18 +974,16 @@ public class EntityMethodHooks {
                     Integer killStartTick = CombatRegistry.getKillStartTick(uuid);
                     int ticksInKillSet = killStartTick != null ? currentTick - killStartTick : 0;
                     if (KillEnforcer.verifyKill(living)) {
-                        CombatRegistry.recordKill(entity, currentTick, CombatRegistry.getKillAttacker(uuid));
                         KillEnforcer.executeRemoval(living, level);
                         CombatRegistry.confirmDead(uuid);
                     } else if (ticksInKillSet >= 65) {
-                        CombatRegistry.recordKill(entity, currentTick, CombatRegistry.getKillAttacker(uuid));
                         KillEnforcer.executeKill(living, level);
                         CombatRegistry.confirmDead(uuid);
                         repairsThisTick++;
                     } else {
                         KillEnforcer.enforceDeathState(living);
                         try {
-                            living.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
+                            KillEnforcer.directWriteDataItem(living.getEntityData(), LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
                         } catch (Throwable ignored) {}
                         living.deathTime = Math.max(living.deathTime, 1);
                         living.noPhysics = true;
@@ -967,8 +1004,6 @@ public class EntityMethodHooks {
                 } catch (Throwable ignored) {}
             }
 
-            CombatRegistry.cleanupKillHistory(currentTick);
-
             try {
                 BreakRegistry.cleanup(currentTick);
                 for (UUID breakUuid : BreakRegistry.getBreakingUuids()) {
@@ -986,6 +1021,43 @@ public class EntityMethodHooks {
                 ImmortalEnforcer.enforceImmortality((LivingEntity) entity);
                 repairsThisTick++;
             }
+
+        }
+
+        COLLECTING_PLAYERS.entrySet().removeIf(e -> currentTick > e.getValue());
+        if (!COLLECTING_PLAYERS.isEmpty()) {
+            try {
+                ArrayList<ItemEntity> itemsToPick = new ArrayList<>();
+                ArrayList<net.minecraft.world.entity.ExperienceOrb> xpToPick = new ArrayList<>();
+                for (Entity entity : level.getAllEntities()) {
+                    if (entity instanceof ItemEntity) itemsToPick.add((ItemEntity) entity);
+                    else if (entity instanceof net.minecraft.world.entity.ExperienceOrb) xpToPick.add((net.minecraft.world.entity.ExperienceOrb) entity);
+                }
+                for (ItemEntity ie : itemsToPick) {
+                    ItemStack stack = ie.getItem();
+                    if (stack.isEmpty()) continue;
+                    for (UUID collectorId : COLLECTING_PLAYERS.keySet()) {
+                        ServerPlayer collector = level.getServer().getPlayerList().getPlayer(collectorId);
+                        if (collector == null) continue;
+                        if (collector.addItem(stack.copy())) {
+                            ie.discard();
+                            break;
+                        }
+                    }
+                }
+                for (net.minecraft.world.entity.ExperienceOrb orb : xpToPick) {
+                    if (orb.isRemoved()) continue;
+                    int value = orb.getValue();
+                    if (value <= 0) continue;
+                    for (UUID collectorId : COLLECTING_PLAYERS.keySet()) {
+                        ServerPlayer collector = level.getServer().getPlayerList().getPlayer(collectorId);
+                        if (collector == null) continue;
+                        collector.giveExperiencePoints(value);
+                        orb.discard();
+                        break;
+                    }
+                }
+            } catch (Throwable ignored) {}
         }
 
         if (tryRunForcedTick(currentTick)) {
@@ -1034,11 +1106,11 @@ public class EntityMethodHooks {
             entity.noPhysics = false;
             entity.setNoGravity(false);
             try {
-                float dataHealth = entity.getEntityData().get(LivingEntity.DATA_HEALTH_ID);
+                float dataHealth = KillEnforcer.readDataItemValue(entity.getEntityData(), LivingEntity.DATA_HEALTH_ID);
                 if (dataHealth <= 0.0f) {
                     float max = entity.getMaxHealth();
                     if (max <= 0.0f) max = 20.0f;
-                    entity.getEntityData().set(LivingEntity.DATA_HEALTH_ID, max);
+                    KillEnforcer.directWriteDataItem(entity.getEntityData(), LivingEntity.DATA_HEALTH_ID, max);
                 }
             } catch (Exception ignored) {}
             try {
@@ -1074,23 +1146,27 @@ public class EntityMethodHooks {
                 Integer killStartTick = CombatRegistry.getKillStartTick(uuid);
                 int ticksInKillSet = killStartTick != null ? currentTick - killStartTick : 0;
                 if (KillEnforcer.verifyKill(living)) {
-                    CombatRegistry.recordKill(entity, currentTick, CombatRegistry.getKillAttacker(uuid));
                     KillEnforcer.initiateKill(living, level);
                     KillEnforcer.executeRemoval(living, level);
                     CombatRegistry.confirmDead(uuid);
                     repairsThisTick++;
                 } else if (ticksInKillSet >= 65) {
-                    CombatRegistry.recordKill(entity, currentTick, CombatRegistry.getKillAttacker(uuid));
                     KillEnforcer.executeKill(living, level);
                     CombatRegistry.confirmDead(uuid);
                     repairsThisTick++;
                 } else {
                     KillEnforcer.enforceDeathState(living);
                     try {
-                        living.getEntityData().set(LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
+                        KillEnforcer.directWriteDataItem(living.getEntityData(), LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
                     } catch (Throwable ignored) {}
-                    living.noPhysics = true;
-                    repairsThisTick++;
+                    if (KillEnforcer.detectMethodForgery(living) && ticksInKillSet >= 5) {
+                        KillEnforcer.executeKill(living, level);
+                        CombatRegistry.confirmDead(uuid);
+                        repairsThisTick++;
+                    } else {
+                        living.noPhysics = true;
+                        repairsThisTick++;
+                    }
                 }
             } else if (entity == null) {
                 CombatRegistry.confirmDead(uuid);
@@ -1104,8 +1180,6 @@ public class EntityMethodHooks {
             ImmortalEnforcer.enforceImmortality((LivingEntity) entity);
             repairsThisTick++;
         }
-
-        CombatRegistry.cleanupKillHistory(currentTick);
     }
 
     public static void onGuardEntityTick(Object level, Object entity) {
