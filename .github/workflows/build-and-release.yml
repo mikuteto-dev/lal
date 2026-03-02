@@ -36,7 +36,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
-          name: LAL v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
           files: build/libs/lal-${{ steps.version.outputs.version }}.jar
           generate_release_notes: true
           make_latest: true
