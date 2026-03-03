@@ -30,13 +30,27 @@ jobs:
 
       - name: Extract version
         id: version
-        run: echo "version=$(grep '^mod_version=' gradle.properties | cut -d'=' -f2)" >> "$GITHUB_OUTPUT"
+        run: |
+          VERSION=$(grep '^mod_version=' gradle.properties | cut -d'=' -f2)
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          if echo "$VERSION" | grep -qE '(alpha|beta|pre)'; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rename jar with build number
+        run: |
+          SRC="build/libs/lal-${{ steps.version.outputs.version }}.jar"
+          DEST="build/libs/lal-${{ steps.version.outputs.version }}+build.${{ github.run_number }}.jar"
+          cp "$SRC" "$DEST"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
+          tag_name: v${{ steps.version.outputs.version }}+build.${{ github.run_number }}
           name: v${{ steps.version.outputs.version }}
-          files: build/libs/lal-${{ steps.version.outputs.version }}.jar
+          files: build/libs/lal-${{ steps.version.outputs.version }}+build.${{ github.run_number }}.jar
           generate_release_notes: true
-          make_latest: true
+          prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.version.outputs.prerelease != 'true' }}
