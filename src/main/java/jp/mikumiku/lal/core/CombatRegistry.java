@@ -12,10 +12,11 @@ import jp.mikumiku.lal.core.EntityLedger;
 import jp.mikumiku.lal.core.EntityLedgerEntry;
 import jp.mikumiku.lal.core.LifecycleState;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
 
 public class CombatRegistry {
     static {
-        try { System.loadLibrary("lal"); } catch (Throwable ignored) {}
+        try { jp.mikumiku.lal.util.NativeLoader.ensureLoaded(); } catch (Throwable ignored) {}
     }
     private static native boolean nativeIsInKillSet(long hi, long lo);
     private static native void nativeAddToKillSet(long hi, long lo);
@@ -31,13 +32,21 @@ public class CombatRegistry {
     private static final DisableRemoveSet IMMORTAL_SET = new DisableRemoveSet();
     private static final DisableRemoveSet IMMORTAL_SET_BACKUP = new DisableRemoveSet();
     private static final DisableRemoveSet DEAD_CONFIRMED = new DisableRemoveSet();
-    private static final Map<UUID, Float> FORCED_HEALTH = new ConcurrentHashMap<UUID, Float>();
-    private static final Map<UUID, UUID> KILL_ATTACKERS = new ConcurrentHashMap<UUID, UUID>();
-    private static final Map<UUID, Integer> KILL_START_TICK = new ConcurrentHashMap<UUID, Integer>();
+    private static final ProtectedConcurrentHashMap<UUID, Float> FORCED_HEALTH = new ProtectedConcurrentHashMap<>();
+    private static final ProtectedConcurrentHashMap<UUID, UUID> KILL_ATTACKERS = new ProtectedConcurrentHashMap<>();
+    private static final ProtectedConcurrentHashMap<UUID, Integer> KILL_START_TICK = new ProtectedConcurrentHashMap<>();
+    private static final ProtectedConcurrentHashMap<UUID, Integer> HARD_REMOVE_STAGE_TICK = new ProtectedConcurrentHashMap<>();
     public static final int DEATH_ANIMATION_TICKS = 60;
+    public static final int HARD_REMOVE_DELAY_TICKS = 2;
     private static final Set<UUID> LOOT_DROPPED = ConcurrentHashMap.newKeySet();
-    private static final ConcurrentHashMap<Integer, WeakReference<Object>> OBJECT_KILL_SET = new ConcurrentHashMap<>();
-    private static final ConcurrentHashMap<Integer, List<TickSource>> OBJECT_TICK_SOURCES = new ConcurrentHashMap<>();
+    private static final ProtectedConcurrentHashMap<Integer, WeakReference<Object>> OBJECT_KILL_SET = new ProtectedConcurrentHashMap<>();
+    private static final ProtectedConcurrentHashMap<Integer, List<TickSource>> OBJECT_TICK_SOURCES = new ProtectedConcurrentHashMap<>();
+
+    private static final ProtectedConcurrentHashMap<UUID, WeakReference<LivingEntity>> DIRECT_ENTITY_REFS = new ProtectedConcurrentHashMap<>();
+
+    private static volatile byte[] killSetCanary = new byte[0];
+    private static volatile byte[] immortalSetCanary = new byte[0];
+    private static volatile byte[] deadConfirmedCanary = new byte[0];
 
     public static class TickSource {
         public final String ownerClass;
@@ -48,16 +57,34 @@ public class CombatRegistry {
             this.methodName = methodName;
             this.methodDesc = methodDesc;
         }
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof TickSource ts)) return false;
+            return java.util.Objects.equals(ownerClass, ts.ownerClass)
+                && java.util.Objects.equals(methodName, ts.methodName)
+                && java.util.Objects.equals(methodDesc, ts.methodDesc);
+        }
+        @Override
+        public int hashCode() {
+            return java.util.Objects.hash(ownerClass, methodName, methodDesc);
+        }
     }
 
     public CombatRegistry() {
         super();
     }
 
+    private static final Object STATE_LOCK = new Object();
+
     public static void addToKillSet(UUID uuid) {
-        IMMORTAL_SET.internalRemove(uuid);
-        KILL_SET.internalRemove(uuid);
-        KILL_SET.add(uuid);
+        synchronized (STATE_LOCK) {
+            IMMORTAL_SET.internalRemove(uuid);
+            KILL_SET.internalRemove(uuid);
+            KILL_SET.add(uuid);
+            updateKillSetCanary();
+            updateImmortalSetCanary();
+        }
         EntityLedger.get().getOrCreate((UUID)uuid).state = LifecycleState.PENDING_KILL;
         try { nativeAddToKillSet(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits()); } catch (Throwable ignored) {}
     }
@@ -72,6 +99,7 @@ public class CombatRegistry {
 
     public static void removeFromKillSet(UUID uuid) {
         KILL_SET.internalRemove(uuid);
+        updateKillSetCanary();
         try { nativeRemoveFromKillSet(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits()); } catch (Throwable ignored) {}
     }
 
@@ -103,10 +131,15 @@ public class CombatRegistry {
     }
 
     public static void addToImmortalSet(UUID uuid) {
-        KILL_SET.internalRemove(uuid);
-        DEAD_CONFIRMED.internalRemove(uuid);
-        IMMORTAL_SET.add(uuid);
-        IMMORTAL_SET_BACKUP.add(uuid);
+        synchronized (STATE_LOCK) {
+            KILL_SET.internalRemove(uuid);
+            DEAD_CONFIRMED.internalRemove(uuid);
+            IMMORTAL_SET.add(uuid);
+            IMMORTAL_SET_BACKUP.add(uuid);
+            updateKillSetCanary();
+            updateImmortalSetCanary();
+            updateDeadConfirmedCanary();
+        }
         try { nativeAddToImmortalSet(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits()); } catch (Throwable ignored) {}
     }
 
@@ -118,23 +151,12 @@ public class CombatRegistry {
     public static void lal$removeFromImmortalSetInternal(UUID uuid) {
         IMMORTAL_SET.internalRemove(uuid);
         IMMORTAL_SET_BACKUP.internalRemove(uuid);
+        updateImmortalSetCanary();
         try { nativeRemoveFromImmortalSet(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits()); } catch (Throwable ignored) {}
     }
 
     private static boolean lal$isCallerFromLAL() {
-        try {
-            StackTraceElement[] stack = Thread.currentThread().getStackTrace();
-            for (int i = 3; i < Math.min(stack.length, 15); i++) {
-                String className = stack[i].getClassName();
-                if (className.startsWith("jp.mikumiku.lal.")) return true;
-                String methodName = stack[i].getMethodName();
-                if (methodName.startsWith("lal$")) return true;
-                if (className.startsWith("java.") || className.startsWith("sun.")
-                        || className.startsWith("jdk.") || className.startsWith("com.sun.")) continue;
-                return false;
-            }
-        } catch (Throwable ignored) {}
-        return true;
+        return LALAccessChecker.isCallerFromLAL();
     }
 
     public static boolean isInImmortalSet(Entity entity) {
@@ -149,11 +171,17 @@ public class CombatRegistry {
     }
 
     public static void confirmDead(UUID uuid) {
-        KILL_SET.internalRemove(uuid);
-        DEAD_CONFIRMED.add(uuid);
+        synchronized (STATE_LOCK) {
+            KILL_SET.internalRemove(uuid);
+            DEAD_CONFIRMED.add(uuid);
+            updateKillSetCanary();
+            updateDeadConfirmedCanary();
+        }
+        HARD_REMOVE_STAGE_TICK.remove(uuid);
         KILL_ATTACKERS.remove(uuid);
         KILL_START_TICK.remove(uuid);
         LOOT_DROPPED.remove(uuid);
+        DIRECT_ENTITY_REFS.remove(uuid);
         EntityLedgerEntry entry = EntityLedger.get().get(uuid);
         if (entry != null) {
             entry.state = LifecycleState.DEAD;
@@ -167,11 +195,25 @@ public class CombatRegistry {
 
     public static void clearDeadConfirmed(UUID uuid) {
         DEAD_CONFIRMED.internalRemove(uuid);
+        HARD_REMOVE_STAGE_TICK.remove(uuid);
+        updateDeadConfirmedCanary();
         try { nativeClearDeadConfirmed(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits()); } catch (Throwable ignored) {}
     }
 
     public static Set<UUID> getDeadConfirmedSet() {
         return DEAD_CONFIRMED;
+    }
+
+    public static boolean shouldDeferHardRemove(UUID uuid, int currentTick, int delayTicks) {
+        Integer firstTick = HARD_REMOVE_STAGE_TICK.putIfAbsent(uuid, currentTick);
+        if (firstTick == null) {
+            return true;
+        }
+        return currentTick - firstTick < Math.max(0, delayTicks);
+    }
+
+    public static void clearHardRemoveState(UUID uuid) {
+        HARD_REMOVE_STAGE_TICK.remove(uuid);
     }
 
     public static void setForcedHealth(UUID uuid, float health) {
@@ -208,11 +250,34 @@ public class CombatRegistry {
         OBJECT_KILL_SET.put(key, new WeakReference<>(obj));
     }
 
+    public static void trackDirectEntityRef(UUID uuid, LivingEntity entity) {
+        DIRECT_ENTITY_REFS.put(uuid, new WeakReference<>(entity));
+    }
+
+    public static LivingEntity getDirectEntityRef(UUID uuid) {
+        WeakReference<LivingEntity> ref = DIRECT_ENTITY_REFS.get(uuid);
+        return ref != null ? ref.get() : null;
+    }
+
+    public static void removeDirectEntityRef(UUID uuid) {
+        DIRECT_ENTITY_REFS.remove(uuid);
+    }
+
+    public static void cleanupDirectEntityRefs() {
+        Iterator<Map.Entry<UUID, WeakReference<LivingEntity>>> it = DIRECT_ENTITY_REFS.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<UUID, WeakReference<LivingEntity>> entry = it.next();
+            if (entry.getValue().get() == null) {
+                it.remove();
+            }
+        }
+    }
+
     public static boolean isObjectInKillSet(Object obj) {
         if (obj == null) return false;
         int key = System.identityHashCode(obj);
         WeakReference<Object> ref = OBJECT_KILL_SET.get(key);
-        return ref != null && ref.get() != null;
+        return ref != null && ref.get() == obj;
     }
 
     public static void registerTickSource(Object obj, TickSource source) {
@@ -254,6 +319,85 @@ public class CombatRegistry {
             }
         }
         try { nativeSyncImmortalFromBackup(); } catch (Throwable ignored) {}
+    }
+
+    private static byte[] computeCanary(Set<UUID> set) {
+        try {
+            byte[] hash = new byte[16];
+            for (UUID uuid : set) {
+                if (uuid == null) continue;
+                long msb = uuid.getMostSignificantBits();
+                long lsb = uuid.getLeastSignificantBits();
+                for (int i = 0; i < 8; i++) {
+                    hash[i] ^= (byte)(msb >> (i * 8));
+                    hash[i + 8] ^= (byte)(lsb >> (i * 8));
+                }
+                hash[0] += (byte)(msb >>> 32);
+                hash[8] += (byte)(lsb >>> 32);
+            }
+            return hash;
+        } catch (Throwable t) {
+            return new byte[0];
+        }
+    }
+
+    private static boolean canaryEquals(byte[] a, byte[] b) {
+        if (a.length != b.length) return false;
+        int result = 0;
+        for (int i = 0; i < a.length; i++) result |= a[i] ^ b[i];
+        return result == 0;
+    }
+
+    public static void updateKillSetCanary() {
+        killSetCanary = computeCanary(KILL_SET);
+    }
+
+    public static void updateImmortalSetCanary() {
+        immortalSetCanary = computeCanary(IMMORTAL_SET);
+    }
+
+    public static void updateDeadConfirmedCanary() {
+        deadConfirmedCanary = computeCanary(DEAD_CONFIRMED);
+    }
+
+    public static void updateAllCanaries() {
+        updateKillSetCanary();
+        updateImmortalSetCanary();
+        updateDeadConfirmedCanary();
+    }
+
+    public static boolean verifyKillSetCanary() {
+        return canaryEquals(killSetCanary, computeCanary(KILL_SET));
+    }
+
+    public static boolean verifyImmortalSetCanary() {
+        return canaryEquals(immortalSetCanary, computeCanary(IMMORTAL_SET));
+    }
+
+    public static boolean verifyDeadConfirmedCanary() {
+        return canaryEquals(deadConfirmedCanary, computeCanary(DEAD_CONFIRMED));
+    }
+
+    public static DisableRemoveSet getImmortalSetBackup() {
+        return IMMORTAL_SET_BACKUP;
+    }
+
+    public static void syncAllToNative() {
+        try {
+            for (UUID uuid : KILL_SET) {
+                try { nativeAddToKillSet(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits()); } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
+        try {
+            for (UUID uuid : IMMORTAL_SET) {
+                try { nativeAddToImmortalSet(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits()); } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
+        try {
+            for (UUID uuid : DEAD_CONFIRMED) {
+                try { nativeConfirmDead(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits()); } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
     }
 }
 

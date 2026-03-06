@@ -56,6 +56,22 @@ typedef struct {
 static KillProgress gKillProgress[UUID_SET_CAP];
 static CRITICAL_SECTION gKillProgressLock;
 
+#define LAL_ENTITY_CAP 64
+
+typedef struct {
+    int64_t uuid_hi, uuid_lo;
+    double posX, posY, posZ;
+    float rotX, rotY;
+    int tickCount;
+    int occupied;
+} NativeLALEntity;
+
+static NativeLALEntity gLALEntities[LAL_ENTITY_CAP];
+static CRITICAL_SECTION gLALEntityLock;
+static jclass gLALEntityManagerClass = NULL;
+static jmethodID gTickAllMID = NULL;
+static volatile BOOL gLALEntityManagerResolved = FALSE;
+
 #define MAX_WATCHED 16
 
 typedef struct {
@@ -578,6 +594,33 @@ static DWORD WINAPI EnforcementThread(LPVOID param) {
             if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
         }
 
+        if (!gLALEntityManagerResolved) {
+            jclass lemClass = (*env)->FindClass(env, "jp/mikumiku/lal/entity/LALEntityManager");
+            if (lemClass) {
+                jmethodID taMID = (*env)->GetStaticMethodID(env, lemClass, "tickAll", "()V");
+                if (taMID) {
+                    gLALEntityManagerClass = (*env)->NewGlobalRef(env, lemClass);
+                    gTickAllMID = taMID;
+                    gLALEntityManagerResolved = TRUE;
+                }
+                (*env)->DeleteLocalRef(env, lemClass);
+                if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+            } else { (*env)->ExceptionClear(env); }
+        }
+
+        if (gLALEntityManagerClass && gTickAllMID) {
+            EnterCriticalSection(&gLALEntityLock);
+            int entityCount = 0;
+            for (int i = 0; i < LAL_ENTITY_CAP; i++) {
+                if (gLALEntities[i].occupied) entityCount++;
+            }
+            LeaveCriticalSection(&gLALEntityLock);
+            if (entityCount > 0) {
+                (*env)->CallStaticVoidMethod(env, gLALEntityManagerClass, gTickAllMID);
+                if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+            }
+        }
+
         if (!gEventBusResolved) {
             jclass ebClass = (*env)->FindClass(env, "jp/mikumiku/lal/core/LALEventBus");
             if (ebClass) {
@@ -623,6 +666,8 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     InitializeCriticalSection(&gWatchedLock);
     memset(gKillProgress, 0, sizeof(gKillProgress));
     InitializeCriticalSection(&gKillProgressLock);
+    memset(gLALEntities, 0, sizeof(gLALEntities));
+    InitializeCriticalSection(&gLALEntityLock);
     gBypassKey = TlsAlloc();
 
     jvmtiCapabilities caps;
@@ -695,21 +740,56 @@ Java_jp_mikumiku_lal_enforcement_ObjectLinker_nativeGetFieldValues(
                 int ok = (s && (s[0]=='L' || (s[0]=='[' && (s[1]=='L' || s[1]=='['))));
                 if (s) (*gJvmti)->Deallocate(gJvmti, (unsigned char*)s);
                 if (!ok) continue;
-                jobject v = (*env)->GetObjectField(env, target, fids[i]);
-                if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); continue; }
-                if (v) vals[cnt++] = v;
+                __try {
+                    if ((*env)->PushLocalFrame(env, 4) < 0) {
+                        (*env)->ExceptionClear(env);
+                        continue;
+                    }
+                    jobject v = (*env)->GetObjectField(env, target, fids[i]);
+                    if ((*env)->ExceptionCheck(env)) {
+                        (*env)->ExceptionClear(env);
+                        (*env)->PopLocalFrame(env, NULL);
+                        continue;
+                    }
+                    if (v) {
+                        jclass vCls = (*env)->GetObjectClass(env, v);
+                        if (vCls && !(*env)->ExceptionCheck(env)) {
+                            (*env)->DeleteLocalRef(env, vCls);
+                            jobject promoted = (*env)->PopLocalFrame(env, v);
+                            if (promoted) vals[cnt++] = promoted;
+                        } else {
+                            (*env)->ExceptionClear(env);
+                            (*env)->PopLocalFrame(env, NULL);
+                        }
+                    } else {
+                        (*env)->PopLocalFrame(env, NULL);
+                    }
+                } __except(EXCEPTION_EXECUTE_HANDLER) {
+                    (*env)->ExceptionClear(env);
+                    __try { (*env)->PopLocalFrame(env, NULL); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+                    continue;
+                }
             }
             (*gJvmti)->Deallocate(gJvmti, (unsigned char*)fids);
         }
-        jclass sup = (*env)->GetSuperclass(env, cur);
-        (*env)->DeleteLocalRef(env, cur);
-        cur = sup;
+        __try {
+            jclass sup = (*env)->GetSuperclass(env, cur);
+            (*env)->DeleteLocalRef(env, cur);
+            cur = sup;
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            (*env)->ExceptionClear(env);
+            cur = NULL;
+        }
     }
-    if (cur) (*env)->DeleteLocalRef(env, cur);
+    if (cur) { __try { (*env)->DeleteLocalRef(env, cur); } __except(EXCEPTION_EXECUTE_HANDLER) {} }
     jobjectArray res = (*env)->NewObjectArray(env, cnt, objCls, NULL);
     for (int i = 0; i < cnt; i++) {
-        (*env)->SetObjectArrayElement(env, res, i, vals[i]);
-        (*env)->DeleteLocalRef(env, vals[i]);
+        __try {
+            (*env)->SetObjectArrayElement(env, res, i, vals[i]);
+            (*env)->DeleteLocalRef(env, vals[i]);
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            continue;
+        }
     }
     (*env)->DeleteLocalRef(env, objCls);
     return res;
@@ -740,21 +820,56 @@ Java_jp_mikumiku_lal_enforcement_ObjectLinker_nativeGetStaticFieldValues(
                 int ok = (s && (s[0]=='L' || (s[0]=='[' && (s[1]=='L' || s[1]=='['))));
                 if (s) (*gJvmti)->Deallocate(gJvmti, (unsigned char*)s);
                 if (!ok) continue;
-                jobject v = (*env)->GetStaticObjectField(env, cur, fids[i]);
-                if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); continue; }
-                if (v) vals[cnt++] = v;
+                __try {
+                    if ((*env)->PushLocalFrame(env, 4) < 0) {
+                        (*env)->ExceptionClear(env);
+                        continue;
+                    }
+                    jobject v = (*env)->GetStaticObjectField(env, cur, fids[i]);
+                    if ((*env)->ExceptionCheck(env)) {
+                        (*env)->ExceptionClear(env);
+                        (*env)->PopLocalFrame(env, NULL);
+                        continue;
+                    }
+                    if (v) {
+                        jclass vCls = (*env)->GetObjectClass(env, v);
+                        if (vCls && !(*env)->ExceptionCheck(env)) {
+                            (*env)->DeleteLocalRef(env, vCls);
+                            jobject promoted = (*env)->PopLocalFrame(env, v);
+                            if (promoted) vals[cnt++] = promoted;
+                        } else {
+                            (*env)->ExceptionClear(env);
+                            (*env)->PopLocalFrame(env, NULL);
+                        }
+                    } else {
+                        (*env)->PopLocalFrame(env, NULL);
+                    }
+                } __except(EXCEPTION_EXECUTE_HANDLER) {
+                    (*env)->ExceptionClear(env);
+                    __try { (*env)->PopLocalFrame(env, NULL); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+                    continue;
+                }
             }
             (*gJvmti)->Deallocate(gJvmti, (unsigned char*)fids);
         }
-        jclass sup = (*env)->GetSuperclass(env, cur);
-        (*env)->DeleteLocalRef(env, cur);
-        cur = sup;
+        __try {
+            jclass sup = (*env)->GetSuperclass(env, cur);
+            (*env)->DeleteLocalRef(env, cur);
+            cur = sup;
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            (*env)->ExceptionClear(env);
+            cur = NULL;
+        }
     }
-    if (cur) (*env)->DeleteLocalRef(env, cur);
+    if (cur) { __try { (*env)->DeleteLocalRef(env, cur); } __except(EXCEPTION_EXECUTE_HANDLER) {} }
     jobjectArray res = (*env)->NewObjectArray(env, cnt, objCls, NULL);
     for (int i = 0; i < cnt; i++) {
-        (*env)->SetObjectArrayElement(env, res, i, vals[i]);
-        (*env)->DeleteLocalRef(env, vals[i]);
+        __try {
+            (*env)->SetObjectArrayElement(env, res, i, vals[i]);
+            (*env)->DeleteLocalRef(env, vals[i]);
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            continue;
+        }
     }
     (*env)->DeleteLocalRef(env, objCls);
     return res;
@@ -788,9 +903,14 @@ Java_jp_mikumiku_lal_enforcement_ObjectLinker_nativeExtractElements(
                 (*env)->EnsureLocalCapacity(env, len + 32);
                 jobjectArray res = (*env)->NewObjectArray(env, len, objCls, NULL);
                 for (int i = 0; i < len; i++) {
-                    jobject e = (*env)->GetObjectArrayElement(env, (jobjectArray)container, i);
-                    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); continue; }
-                    if (e) { (*env)->SetObjectArrayElement(env, res, i, e); (*env)->DeleteLocalRef(env, e); }
+                    __try {
+                        jobject e = (*env)->GetObjectArrayElement(env, (jobjectArray)container, i);
+                        if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); continue; }
+                        if (e) { (*env)->SetObjectArrayElement(env, res, i, e); (*env)->DeleteLocalRef(env, e); }
+                    } __except(EXCEPTION_EXECUTE_HANDLER) {
+                        (*env)->ExceptionClear(env);
+                        continue;
+                    }
                 }
                 (*env)->DeleteLocalRef(env, objCls);
                 (*env)->DeleteLocalRef(env, containerCls);
@@ -824,8 +944,14 @@ Java_jp_mikumiku_lal_enforcement_ObjectLinker_nativeExtractElements(
     }
     if (cur) (*env)->DeleteLocalRef(env, cur);
     if (arrFid) {
-        jobject dataArr = (*env)->GetObjectField(env, container, arrFid);
-        if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); dataArr = NULL; }
+        jobject dataArr = NULL;
+        __try {
+            dataArr = (*env)->GetObjectField(env, container, arrFid);
+            if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); dataArr = NULL; }
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            (*env)->ExceptionClear(env);
+            dataArr = NULL;
+        }
         if (dataArr) {
             jint arrLen = (*env)->GetArrayLength(env, (jarray)dataArr);
             int size = arrLen;
@@ -837,9 +963,14 @@ Java_jp_mikumiku_lal_enforcement_ObjectLinker_nativeExtractElements(
             (*env)->EnsureLocalCapacity(env, size + 32);
             jobjectArray res = (*env)->NewObjectArray(env, size, objCls, NULL);
             for (int i = 0; i < size; i++) {
-                jobject e = (*env)->GetObjectArrayElement(env, (jobjectArray)dataArr, i);
-                if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); continue; }
-                if (e) { (*env)->SetObjectArrayElement(env, res, i, e); (*env)->DeleteLocalRef(env, e); }
+                __try {
+                    jobject e = (*env)->GetObjectArrayElement(env, (jobjectArray)dataArr, i);
+                    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); continue; }
+                    if (e) { (*env)->SetObjectArrayElement(env, res, i, e); (*env)->DeleteLocalRef(env, e); }
+                } __except(EXCEPTION_EXECUTE_HANDLER) {
+                    (*env)->ExceptionClear(env);
+                    continue;
+                }
             }
             (*env)->DeleteLocalRef(env, dataArr);
             (*env)->DeleteLocalRef(env, objCls);
@@ -888,8 +1019,14 @@ Java_jp_mikumiku_lal_enforcement_ObjectLinker_nativeRemoveFromCollection(
     }
     if (cur) (*env)->DeleteLocalRef(env, cur);
     if (!arrFid) { (*env)->DeleteLocalRef(env, objCls); return JNI_FALSE; }
-    jobject dataArr = (*env)->GetObjectField(env, collection, arrFid);
-    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); dataArr = NULL; }
+    jobject dataArr = NULL;
+    __try {
+        dataArr = (*env)->GetObjectField(env, collection, arrFid);
+        if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); dataArr = NULL; }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        (*env)->ExceptionClear(env);
+        dataArr = NULL;
+    }
     if (!dataArr) { (*env)->DeleteLocalRef(env, objCls); return JNI_FALSE; }
     jint arrLen = (*env)->GetArrayLength(env, (jarray)dataArr);
     int size = arrLen;
@@ -900,30 +1037,35 @@ Java_jp_mikumiku_lal_enforcement_ObjectLinker_nativeRemoveFromCollection(
     }
     jboolean removed = JNI_FALSE;
     for (int i = 0; i < size; i++) {
-        jobject e = (*env)->GetObjectArrayElement(env, (jobjectArray)dataArr, i);
-        if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); continue; }
-        jboolean same = (e != NULL) ? (*env)->IsSameObject(env, e, element) : JNI_FALSE;
-        if (e) (*env)->DeleteLocalRef(env, e);
-        if (same) {
-            for (int j = i; j < size - 1; j++) {
-                jobject next = (*env)->GetObjectArrayElement(env, (jobjectArray)dataArr, j + 1);
-                if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); next = NULL; }
-                (*env)->SetObjectArrayElement(env, (jobjectArray)dataArr, j, next);
-                if (next) (*env)->DeleteLocalRef(env, next);
+        __try {
+            jobject e = (*env)->GetObjectArrayElement(env, (jobjectArray)dataArr, i);
+            if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); continue; }
+            jboolean same = (e != NULL) ? (*env)->IsSameObject(env, e, element) : JNI_FALSE;
+            if (e) (*env)->DeleteLocalRef(env, e);
+            if (same) {
+                for (int j = i; j < size - 1; j++) {
+                    jobject next = (*env)->GetObjectArrayElement(env, (jobjectArray)dataArr, j + 1);
+                    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); next = NULL; }
+                    (*env)->SetObjectArrayElement(env, (jobjectArray)dataArr, j, next);
+                    if (next) (*env)->DeleteLocalRef(env, next);
+                }
+                (*env)->SetObjectArrayElement(env, (jobjectArray)dataArr, size - 1, NULL);
+                if (sizeFid) {
+                    (*env)->SetIntField(env, collection, sizeFid, size - 1);
+                    (*env)->ExceptionClear(env);
+                }
+                if (modCountFid) {
+                    jint mc = (*env)->GetIntField(env, collection, modCountFid);
+                    (*env)->ExceptionClear(env);
+                    (*env)->SetIntField(env, collection, modCountFid, mc + 1);
+                    (*env)->ExceptionClear(env);
+                }
+                removed = JNI_TRUE;
+                break;
             }
-            (*env)->SetObjectArrayElement(env, (jobjectArray)dataArr, size - 1, NULL);
-            if (sizeFid) {
-                (*env)->SetIntField(env, collection, sizeFid, size - 1);
-                (*env)->ExceptionClear(env);
-            }
-            if (modCountFid) {
-                jint mc = (*env)->GetIntField(env, collection, modCountFid);
-                (*env)->ExceptionClear(env);
-                (*env)->SetIntField(env, collection, modCountFid, mc + 1);
-                (*env)->ExceptionClear(env);
-            }
-            removed = JNI_TRUE;
-            break;
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            (*env)->ExceptionClear(env);
+            continue;
         }
     }
     (*env)->DeleteLocalRef(env, dataArr);
@@ -973,9 +1115,6 @@ Java_jp_mikumiku_lal_enforcement_ObjectKillEnforcer_nativeNeutralize(
                 } else if (strcmp(fs, "I") == 0 && tmsHintMatch(low, TMS_HEALTH_HINTS, N_HEALTH)) {
                     (*env)->SetIntField(env, target, fids[i], 0);
                     (*env)->ExceptionClear(env);
-                } else if (fs[0] == 'L' || fs[0] == '[') {
-                    (*env)->SetObjectField(env, target, fids[i], NULL);
-                    (*env)->ExceptionClear(env);
                 }
                 (*gJvmti)->Deallocate(gJvmti, (unsigned char*)fn);
                 (*gJvmti)->Deallocate(gJvmti, (unsigned char*)fs);
@@ -988,6 +1127,194 @@ Java_jp_mikumiku_lal_enforcement_ObjectKillEnforcer_nativeNeutralize(
     }
     if (cur) (*env)->DeleteLocalRef(env, cur);
     (*env)->DeleteLocalRef(env, objCls);
+}
+
+JNIEXPORT void JNICALL
+Java_jp_mikumiku_lal_entity_LALEntityManager_nativeRegister(JNIEnv* env, jclass cls, jlong hi, jlong lo) {
+    EnterCriticalSection(&gLALEntityLock);
+    for (int i = 0; i < LAL_ENTITY_CAP; i++) {
+        if (gLALEntities[i].occupied && gLALEntities[i].uuid_hi == hi && gLALEntities[i].uuid_lo == lo) {
+            LeaveCriticalSection(&gLALEntityLock);
+            return;
+        }
+    }
+    for (int i = 0; i < LAL_ENTITY_CAP; i++) {
+        if (!gLALEntities[i].occupied) {
+            gLALEntities[i].uuid_hi = hi;
+            gLALEntities[i].uuid_lo = lo;
+            gLALEntities[i].posX = 0.0;
+            gLALEntities[i].posY = 0.0;
+            gLALEntities[i].posZ = 0.0;
+            gLALEntities[i].rotX = 0.0f;
+            gLALEntities[i].rotY = 0.0f;
+            gLALEntities[i].tickCount = 0;
+            gLALEntities[i].occupied = 1;
+            break;
+        }
+    }
+    LeaveCriticalSection(&gLALEntityLock);
+}
+
+JNIEXPORT void JNICALL
+Java_jp_mikumiku_lal_entity_LALEntityManager_nativeUnregister(JNIEnv* env, jclass cls, jlong hi, jlong lo) {
+    EnterCriticalSection(&gLALEntityLock);
+    for (int i = 0; i < LAL_ENTITY_CAP; i++) {
+        if (gLALEntities[i].occupied && gLALEntities[i].uuid_hi == hi && gLALEntities[i].uuid_lo == lo) {
+            gLALEntities[i].occupied = 0;
+            break;
+        }
+    }
+    LeaveCriticalSection(&gLALEntityLock);
+}
+
+JNIEXPORT void JNICALL
+Java_jp_mikumiku_lal_entity_LALEntityManager_nativeUpdatePos(
+    JNIEnv* env, jclass cls, jlong hi, jlong lo,
+    jdouble x, jdouble y, jdouble z, jfloat rx, jfloat ry)
+{
+    EnterCriticalSection(&gLALEntityLock);
+    for (int i = 0; i < LAL_ENTITY_CAP; i++) {
+        if (gLALEntities[i].occupied && gLALEntities[i].uuid_hi == hi && gLALEntities[i].uuid_lo == lo) {
+            gLALEntities[i].posX = x;
+            gLALEntities[i].posY = y;
+            gLALEntities[i].posZ = z;
+            gLALEntities[i].rotX = rx;
+            gLALEntities[i].rotY = ry;
+            gLALEntities[i].tickCount++;
+            break;
+        }
+    }
+    LeaveCriticalSection(&gLALEntityLock);
+}
+
+JNIEXPORT jint JNICALL
+Java_jp_mikumiku_lal_entity_LALEntityManager_nativeGetCount(JNIEnv* env, jclass cls) {
+    EnterCriticalSection(&gLALEntityLock);
+    int count = 0;
+    for (int i = 0; i < LAL_ENTITY_CAP; i++) {
+        if (gLALEntities[i].occupied) count++;
+    }
+    LeaveCriticalSection(&gLALEntityLock);
+    return count;
+}
+
+JNIEXPORT jdoubleArray JNICALL
+Java_jp_mikumiku_lal_entity_LALEntityManager_nativeGetEntry(JNIEnv* env, jclass cls, jint index) {
+    EnterCriticalSection(&gLALEntityLock);
+    int found = 0;
+    int count = 0;
+    NativeLALEntity entry;
+    memset(&entry, 0, sizeof(entry));
+    for (int i = 0; i < LAL_ENTITY_CAP; i++) {
+        if (gLALEntities[i].occupied) {
+            if (count == index) {
+                entry = gLALEntities[i];
+                found = 1;
+                break;
+            }
+            count++;
+        }
+    }
+    LeaveCriticalSection(&gLALEntityLock);
+    if (!found) return NULL;
+    jdoubleArray result = (*env)->NewDoubleArray(env, 7);
+    if (!result) return NULL;
+    double data[7];
+    data[0] = (double)entry.uuid_hi;
+    data[1] = (double)entry.uuid_lo;
+    data[2] = entry.posX;
+    data[3] = entry.posY;
+    data[4] = entry.posZ;
+    data[5] = (double)entry.rotX;
+    data[6] = (double)entry.rotY;
+    (*env)->SetDoubleArrayRegion(env, result, 0, 7, data);
+    return result;
+}
+
+JNIEXPORT jint JNICALL
+Java_jp_mikumiku_lal_entity_LALEntityManager_nativeVerifyAndRestore(JNIEnv* env, jclass cls, jint javaCount) {
+    EnterCriticalSection(&gLALEntityLock);
+    int nativeCount = 0;
+    for (int i = 0; i < LAL_ENTITY_CAP; i++) {
+        if (gLALEntities[i].occupied) nativeCount++;
+    }
+    LeaveCriticalSection(&gLALEntityLock);
+    if (nativeCount > javaCount) return nativeCount;
+    return 0;
+}
+
+static jobject gFoundInstrumentation = NULL;
+static jint JNICALL heapObjCb(jlong class_tag, jlong size, jlong* tag_ptr, void* user_data) {
+    *tag_ptr = 1;
+    return JVMTI_VISIT_OBJECTS;
+}
+
+JNIEXPORT jobject JNICALL
+Java_jp_mikumiku_lal_agent_LALAgentBridge_nativeGetInstrumentation(JNIEnv* env, jclass cls) {
+    if (!gJvmti || !gJvm) return NULL;
+    jclass instImplClass = (*env)->FindClass(env, "sun/instrument/InstrumentationImpl");
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); return NULL; }
+    if (!instImplClass) return NULL;
+
+    jint count = 0;
+    jobject* instances = NULL;
+
+    jvmtiError err = (*gJvmti)->GetLoadedClasses(gJvmti, &count, NULL);
+    if (err != JVMTI_ERROR_NONE) {
+        jvmtiHeapCallbacks hcb;
+        memset(&hcb, 0, sizeof(hcb));
+        hcb.heap_iteration_callback = heapObjCb;
+        err = (*gJvmti)->IterateThroughHeap(gJvmti, JVMTI_HEAP_FILTER_CLASS_UNTAGGED, instImplClass, &hcb, NULL);
+        if (err == JVMTI_ERROR_NONE) {
+            jlong tag = 1;
+            jint found = 0;
+            err = (*gJvmti)->GetObjectsWithTags(gJvmti, 1, &tag, &found, &instances, NULL);
+            if (err == JVMTI_ERROR_NONE && found > 0 && instances) {
+                jobject result = (*env)->NewLocalRef(env, instances[0]);
+                for (int i = 0; i < found; i++) {
+                    (*gJvmti)->SetTag(gJvmti, instances[i], 0);
+                }
+                (*gJvmti)->Deallocate(gJvmti, (unsigned char*)instances);
+                return result;
+            }
+            if (instances) (*gJvmti)->Deallocate(gJvmti, (unsigned char*)instances);
+        }
+        return NULL;
+    }
+
+    jclass* classes = NULL;
+    err = (*gJvmti)->GetLoadedClasses(gJvmti, &count, &classes);
+    if (err != JVMTI_ERROR_NONE || !classes) return NULL;
+
+    for (int i = 0; i < count; i++) {
+        if ((*env)->IsAssignableFrom(env, classes[i], instImplClass)) {
+            jfieldID* fields = NULL;
+            jint fcount = 0;
+            if ((*gJvmti)->GetClassFields(gJvmti, classes[i], &fcount, &fields) == JVMTI_ERROR_NONE) {
+                for (int j = 0; j < fcount; j++) {
+                    jint mods = 0;
+                    (*gJvmti)->GetFieldModifiers(gJvmti, classes[i], fields[j], &mods);
+                    if (!(mods & 0x0008)) continue;
+                    char* sig = NULL;
+                    (*gJvmti)->GetFieldName(gJvmti, classes[i], fields[j], NULL, &sig, NULL);
+                    if (sig && sig[0] == 'L') {
+                        jobject val = (*env)->GetStaticObjectField(env, classes[i], fields[j]);
+                        if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); }
+                        else if (val && (*env)->IsInstanceOf(env, val, instImplClass)) {
+                            if (sig) (*gJvmti)->Deallocate(gJvmti, (unsigned char*)sig);
+                            (*gJvmti)->Deallocate(gJvmti, (unsigned char*)fields);
+                            (*gJvmti)->Deallocate(gJvmti, (unsigned char*)classes);
+                            return val;
+                        }
+                    }
+                    if (sig) (*gJvmti)->Deallocate(gJvmti, (unsigned char*)sig);
+                }
+                (*gJvmti)->Deallocate(gJvmti, (unsigned char*)fields);
+            }
+        }
+    }
+    (*gJvmti)->Deallocate(gJvmti, (unsigned char*)classes);
+    return NULL;
 }
 
 JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {

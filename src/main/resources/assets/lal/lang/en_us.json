@@ -1,12 +1,15 @@
 {
   "item.lal.lal_sword": "LAL Sword",
   "item.lal.lal_bow": "LAL Bow",
-  "item.lal.lal_breaker": "LAL Breaker",
+  "item.lal.lal_breaker": "LAL Breaker (WIP)",
   "item.lal.lal_helmet": "LAL Helmet",
   "item.lal.lal_chestplate": "LAL Chestplate",
   "item.lal.lal_leggings": "LAL Leggings",
   "item.lal.lal_boots": "LAL Boots",
   "itemGroup.lal": "Life Authority Layer",
   "death.attack.lal_attack": "%1$s was erased by LAL",
-  "death.attack.lal_attack.player": "%1$s was erased by %2$s using LAL"
+  "death.attack.lal_attack.player": "%1$s was erased by %2$s using LAL",
+  "item.lal.lal_entity_spawner": "LAL Entity Spawn Egg (WIP)",
+  "item.lal.lal_entity_remover": "LAL Entity Remover (WIP)",
+  "entity.lal.lal_entity_proxy": "LALentity (WIP)"
 }

@@ -1,6 +1,7 @@
 package jp.mikumiku.lal.mixin;
 
 import jp.mikumiku.lal.core.CombatRegistry;
+import jp.mikumiku.lal.transformer.EntityMethodHooks;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.entity.EntityAccess;
 import net.minecraft.world.level.entity.PersistentEntitySectionManager;
@@ -18,9 +19,7 @@ public class PersistentEntitySectionManagerMixin<T> {
     @Inject(method = "addEntityUuid", at = @At("HEAD"), cancellable = true)
     private void lal$blockAddEntityUuid(EntityAccess entityAccess, CallbackInfoReturnable<Boolean> cir) {
         try {
-            if (!(entityAccess instanceof Entity)) return;
-            UUID uuid = ((Entity) entityAccess).getUUID();
-            if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) {
+            if (EntityMethodHooks.shouldBlockAddEntityUuid(this, entityAccess)) {
                 cir.setReturnValue(false);
             }
         } catch (Throwable ignored) {}

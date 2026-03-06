@@ -9,9 +9,11 @@ import java.util.ArrayList;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import jp.mikumiku.lal.core.CombatRegistry;
 import jp.mikumiku.lal.item.LALSwordItem;
 import jp.mikumiku.lal.util.FieldAccessUtil;
+import jp.mikumiku.lal.util.MixinUtil;
 import jp.mikumiku.lal.core.EntityLedger;
 import jp.mikumiku.lal.core.EntityLedgerEntry;
 import net.minecraft.nbt.CompoundTag;
@@ -30,6 +32,9 @@ import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.core.SectionPos;
+import net.minecraft.world.level.entity.EntityInLevelCallback;
 
 public class ImmortalEnforcer {
     private static VarHandle HEALTH_HANDLE;
@@ -47,6 +52,10 @@ public class ImmortalEnforcer {
     private static Field ENTITY_DATA_ITEMS_BY_ID;
     private static final Set<String> VANILLA_FLOAT_FIELDS;
     private static final Set<String> VANILLA_BOOLEAN_FIELDS;
+    private static Field tickListActiveField;
+    private static final ConcurrentHashMap<UUID, Object> CALLBACK_BACKUP = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<UUID, double[]> POSITION_BACKUP = new ConcurrentHashMap<>();
+    private static final double POSITION_CORRECTION_THRESHOLD = 16.0;
 
     public ImmortalEnforcer() {
         super();
@@ -65,7 +74,7 @@ public class ImmortalEnforcer {
         for (Field field : FieldAccessUtil.safeGetDeclaredFields(clazz)) {
             if (Modifier.isStatic(field.getModifiers()) || field.getType() != fieldType) continue;
             String n = field.getName().toLowerCase();
-            if (fieldType == Float.TYPE && (n.contains("health") || n.equals("f_20958_"))) {
+            if (fieldType == Float.TYPE && (n.contains("health") || n.equals("f_20769_"))) {
                 try {
                     field.setAccessible(true);
                     return field;
@@ -83,7 +92,7 @@ public class ImmortalEnforcer {
                     {}
                 }
             }
-            if (fieldType == Boolean.TYPE && (n.contains("dead") || n.equals("f_20960_"))) {
+            if (fieldType == Boolean.TYPE && (n.contains("dead") || n.equals("f_20890_"))) {
                 try {
                     field.setAccessible(true);
                     return field;
@@ -93,7 +102,7 @@ public class ImmortalEnforcer {
                 }
             }
             if (fieldType != Integer.TYPE) continue;
-            if (n.contains("deathtime") || n.contains("death") || n.equals("f_20962_")) {
+            if (n.contains("deathtime") || n.contains("death") || n.equals("f_20919_")) {
                 try {
                     field.setAccessible(true);
                     return field;
@@ -102,7 +111,7 @@ public class ImmortalEnforcer {
                     {}
                 }
             }
-            if (!n.contains("hurttime") && !n.contains("hurt") && !n.equals("f_20955_")) continue;
+            if (!n.contains("hurttime") && !n.contains("hurt") && !n.equals("f_20916_")) continue;
             try {
                 field.setAccessible(true);
                 return field;
@@ -115,121 +124,84 @@ public class ImmortalEnforcer {
     }
 
     private static void setHealthField(LivingEntity entity, float value) {
-        if (HEALTH_HANDLE != null) {
+        if (HEALTH_HANDLE != null && !FieldAccessUtil.isVarHandleCompromised()) {
             HEALTH_HANDLE.set(entity, value);
-            return;
         }
         if (HEALTH_FIELD != null) {
-            try {
-                HEALTH_FIELD.setFloat(entity, value);
-            }
-            catch (Throwable throwable) {
-                {}
-            }
+            try { HEALTH_FIELD.setFloat(entity, value); } catch (Throwable ignored) {}
         }
+        if (FieldAccessUtil.HEALTH != null && !FieldAccessUtil.isVarHandleCompromised()) {
+            try { FieldAccessUtil.HEALTH.set(entity, value); } catch (Throwable ignored) {}
+        }
+        try { FieldAccessUtil.unsafePutFloat(entity, HEALTH_FIELD != null ? HEALTH_FIELD : FieldAccessUtil.findAccessibleField(LivingEntity.class, "f_20769_"), value); } catch (Throwable ignored) {}
     }
 
     private static float getHealthField(LivingEntity entity) {
-        if (HEALTH_HANDLE != null) {
+        if (HEALTH_HANDLE != null && !FieldAccessUtil.isVarHandleCompromised()) {
             return (float) HEALTH_HANDLE.get(entity);
         }
         if (HEALTH_FIELD != null) {
-            try {
-                return HEALTH_FIELD.getFloat(entity);
-            }
-            catch (Throwable throwable) {
-                {}
-            }
+            try { return HEALTH_FIELD.getFloat(entity); } catch (Throwable ignored) {}
         }
         return entity.getHealth();
     }
 
     private static void setDeathTimeField(LivingEntity entity, int value) {
-        if (DEATH_TIME_HANDLE != null) {
+        if (DEATH_TIME_HANDLE != null && !FieldAccessUtil.isVarHandleCompromised()) {
             DEATH_TIME_HANDLE.set(entity, value);
-            return;
         }
         if (DEATH_TIME_FIELD != null) {
-            try {
-                DEATH_TIME_FIELD.setInt(entity, value);
-            }
-            catch (Throwable throwable) {
-                {}
-            }
+            try { DEATH_TIME_FIELD.setInt(entity, value); } catch (Throwable ignored) {}
         }
+        try { FieldAccessUtil.unsafePutInt(entity, DEATH_TIME_FIELD != null ? DEATH_TIME_FIELD : FieldAccessUtil.findAccessibleField(LivingEntity.class, "f_20919_"), value); } catch (Throwable ignored) {}
     }
 
     private static void setDeadField(LivingEntity entity, boolean value) {
-        if (DEAD_HANDLE != null) {
+        if (DEAD_HANDLE != null && !FieldAccessUtil.isVarHandleCompromised()) {
             DEAD_HANDLE.set(entity, value);
-            return;
         }
         if (DEAD_FIELD != null) {
-            try {
-                DEAD_FIELD.setBoolean(entity, value);
-            }
-            catch (Throwable throwable) {
-                {}
-            }
+            try { DEAD_FIELD.setBoolean(entity, value); } catch (Throwable ignored) {}
         }
+        try { FieldAccessUtil.unsafePutBoolean(entity, DEAD_FIELD != null ? DEAD_FIELD : FieldAccessUtil.findAccessibleField(LivingEntity.class, "f_20890_"), value); } catch (Throwable ignored) {}
     }
 
     private static boolean getDeadField(LivingEntity entity) {
-        if (DEAD_HANDLE != null) {
+        if (DEAD_HANDLE != null && !FieldAccessUtil.isVarHandleCompromised()) {
             return (boolean) DEAD_HANDLE.get(entity);
         }
         if (DEAD_FIELD != null) {
-            try {
-                return DEAD_FIELD.getBoolean(entity);
-            }
-            catch (Throwable throwable) {
-                {}
-            }
+            try { return DEAD_FIELD.getBoolean(entity); } catch (Throwable ignored) {}
         }
         return entity.isDeadOrDying();
     }
 
     private static void setHurtTimeField(LivingEntity entity, int value) {
-        if (HURT_TIME_HANDLE != null) {
+        if (HURT_TIME_HANDLE != null && !FieldAccessUtil.isVarHandleCompromised()) {
             HURT_TIME_HANDLE.set(entity, value);
-            return;
         }
         if (HURT_TIME_FIELD != null) {
-            try {
-                HURT_TIME_FIELD.setInt(entity, value);
-            }
-            catch (Throwable throwable) {
-                {}
-            }
+            try { HURT_TIME_FIELD.setInt(entity, value); } catch (Throwable ignored) {}
         }
+        try { FieldAccessUtil.unsafePutInt(entity, HURT_TIME_FIELD != null ? HURT_TIME_FIELD : FieldAccessUtil.findAccessibleField(LivingEntity.class, "f_20916_"), value); } catch (Throwable ignored) {}
     }
 
     private static void setRemovalReasonField(Entity entity, Entity.RemovalReason value) {
-        if (REMOVAL_REASON_HANDLE != null) {
+        if (REMOVAL_REASON_HANDLE != null && !FieldAccessUtil.isVarHandleCompromised()) {
             REMOVAL_REASON_HANDLE.set(entity, value);
-            return;
         }
         if (REMOVAL_REASON_FIELD != null) {
-            try {
-                REMOVAL_REASON_FIELD.set(entity, value);
-            }
-            catch (Throwable throwable) {
-                {}
-            }
+            try { REMOVAL_REASON_FIELD.set(entity, value); } catch (Throwable ignored) {}
         }
+        try { FieldAccessUtil.unsafePutObject(entity, REMOVAL_REASON_FIELD != null ? REMOVAL_REASON_FIELD : FieldAccessUtil.findAccessibleField(Entity.class, "f_146795_"), value); } catch (Throwable ignored) {}
     }
 
     private static Entity.RemovalReason getRemovalReasonField(Entity entity) {
-        if (REMOVAL_REASON_HANDLE != null) {
+        if (REMOVAL_REASON_HANDLE != null && !FieldAccessUtil.isVarHandleCompromised()) {
             return (Entity.RemovalReason) REMOVAL_REASON_HANDLE.get(entity);
         }
         if (REMOVAL_REASON_FIELD != null) {
-            try {
-                return (Entity.RemovalReason)REMOVAL_REASON_FIELD.get(entity);
-            }
-            catch (Throwable throwable) {
-                {}
-            }
+            try { return (Entity.RemovalReason) REMOVAL_REASON_FIELD.get(entity); } catch (Throwable ignored) {}
         }
         return entity.getRemovalReason();
     }
@@ -288,6 +260,34 @@ public class ImmortalEnforcer {
         ImmortalEnforcer.setHurtTimeField(entity, value);
     }
 
+    public static void handleImmediateIntrusion(Entity entity) {
+        if (entity == null) return;
+        UUID uuid = entity.getUUID();
+        if (!CombatRegistry.isInImmortalSet(uuid)) return;
+        try {
+            if (entity instanceof LivingEntity living) {
+                enforceImmortality(living);
+            }
+        } catch (Throwable ignored) {}
+        try {
+            setRemovalReasonField(entity, null);
+        } catch (Throwable ignored) {}
+        try {
+            entity.noPhysics = false;
+        } catch (Throwable ignored) {}
+        try {
+            entity.setNoGravity(false);
+        } catch (Throwable ignored) {}
+        try {
+            entity.setInvulnerable(true);
+        } catch (Throwable ignored) {}
+        try {
+            if (entity.level() instanceof net.minecraft.server.level.ServerLevel level) {
+                ensureInTickList(entity, level);
+            }
+        } catch (Throwable ignored) {}
+    }
+
     public static void enforceImmortality(LivingEntity entity) {
         block86: {
             block85: {
@@ -300,10 +300,7 @@ public class ImmortalEnforcer {
                             if (!CombatRegistry.isInImmortalSet(uuid)) {
                                 return;
                             }
-                            maxHealth = entity.getMaxHealth();
-                            if (maxHealth <= 0.0f) {
-                                maxHealth = 20.0f;
-                            }
+                            maxHealth = MixinUtil.safeMaxHealth(entity);
                             try {
                                 AttributeInstance maxHealthAttr = entity.getAttribute(Attributes.MAX_HEALTH);
                                 if (maxHealthAttr == null) break block81;
@@ -319,9 +316,7 @@ public class ImmortalEnforcer {
                                 catch (Throwable throwable) {
                                     {}
                                 }
-                                if ((maxHealth = entity.getMaxHealth()) <= 0.0f) {
-                                    maxHealth = 20.0f;
-                                }
+                                maxHealth = MixinUtil.safeMaxHealth(entity);
                             }
                             catch (Throwable maxHealthAttr) {
                                 {}
@@ -370,6 +365,11 @@ public class ImmortalEnforcer {
                         catch (Throwable currentHealth) {
                             {}
                         }
+                        try {
+                            jp.mikumiku.lal.transformer.EntityMethodHooks.setBypass(true);
+                            try { entity.setInvulnerable(true); }
+                            finally { jp.mikumiku.lal.transformer.EntityMethodHooks.setBypass(false); }
+                        } catch (Throwable ignored) {}
                         try {
                             if (VALID_FIELD != null && !entity.isAddedToWorld()) {
                                 VALID_FIELD.set(entity, true);
@@ -578,6 +578,38 @@ public class ImmortalEnforcer {
                     {}
                 }
             }
+            try {
+                UUID posUuid = entity.getUUID();
+                double cx = entity.getX();
+                double cy = entity.getY();
+                double cz = entity.getZ();
+                double[] prev = POSITION_BACKUP.get(posUuid);
+                if (prev != null) {
+                    double dx = cx - prev[0];
+                    double dy = cy - prev[1];
+                    double dz = cz - prev[2];
+                    double distSq = dx * dx + dy * dy + dz * dz;
+                    if (distSq > POSITION_CORRECTION_THRESHOLD * POSITION_CORRECTION_THRESHOLD && !(entity instanceof Player)) {
+                        try {
+                            entity.teleportTo(prev[0], prev[1], prev[2]);
+                        } catch (Throwable t1) {
+                            try {
+                                entity.moveTo(prev[0], prev[1], prev[2], entity.getYRot(), entity.getXRot());
+                            } catch (Throwable t2) {
+                                try {
+                                    entity.setPosRaw(prev[0], prev[1], prev[2]);
+                                } catch (Throwable ignored) {}
+                            }
+                        }
+                    } else {
+                        prev[0] = cx;
+                        prev[1] = cy;
+                        prev[2] = cz;
+                    }
+                } else {
+                    POSITION_BACKUP.put(posUuid, new double[]{cx, cy, cz});
+                }
+            } catch (Throwable ignored) {}
         }
     }
 
@@ -852,32 +884,34 @@ public class ImmortalEnforcer {
     }
 
     static {
+        MethodHandles.Lookup lookup = null;
         try {
-            MethodHandles.Lookup lookup = MethodHandles.privateLookupIn(LivingEntity.class, MethodHandles.lookup());
-            HEALTH_HANDLE = FieldAccessUtil.findVarHandle(lookup, LivingEntity.class, Float.TYPE, "f_20958_", "health");
-            DEATH_TIME_HANDLE = FieldAccessUtil.findVarHandle(lookup, LivingEntity.class, Integer.TYPE, "f_20962_", "deathTime");
-            DEAD_HANDLE = FieldAccessUtil.findVarHandle(lookup, LivingEntity.class, Boolean.TYPE, "f_20960_", "dead");
-            HURT_TIME_HANDLE = FieldAccessUtil.findVarHandle(lookup, LivingEntity.class, Integer.TYPE, "f_20955_", "hurtTime");
+            lookup = MethodHandles.privateLookupIn(LivingEntity.class, MethodHandles.lookup());
+        } catch (Throwable e) {}
+        if (lookup != null) {
+            try { HEALTH_HANDLE = FieldAccessUtil.findVarHandle(lookup, LivingEntity.class, Float.TYPE, "f_20769_", "health"); } catch (Throwable e) {}
+            try { DEATH_TIME_HANDLE = FieldAccessUtil.findVarHandle(lookup, LivingEntity.class, Integer.TYPE, "f_20919_", "deathTime"); } catch (Throwable e) {}
+            try { DEAD_HANDLE = FieldAccessUtil.findVarHandle(lookup, LivingEntity.class, Boolean.TYPE, "f_20890_", "dead"); } catch (Throwable e) {}
+            try { HURT_TIME_HANDLE = FieldAccessUtil.findVarHandle(lookup, LivingEntity.class, Integer.TYPE, "f_20916_", "hurtTime"); } catch (Throwable e) {}
+        }
+        try {
             MethodHandles.Lookup entityLookup = MethodHandles.privateLookupIn(Entity.class, MethodHandles.lookup());
-            REMOVAL_REASON_HANDLE = FieldAccessUtil.findVarHandle(entityLookup, Entity.class, Entity.RemovalReason.class, "f_146801_", "removalReason");
-        }
-        catch (Throwable e) {
-            {}
-        }
+            REMOVAL_REASON_HANDLE = FieldAccessUtil.findVarHandle(entityLookup, Entity.class, Entity.RemovalReason.class, "f_146795_", "removalReason");
+        } catch (Throwable e) {}
         if (HEALTH_HANDLE == null) {
-            HEALTH_FIELD = ImmortalEnforcer.findReflectionField(LivingEntity.class, Float.TYPE, "f_20958_", "health");
+            HEALTH_FIELD = ImmortalEnforcer.findReflectionField(LivingEntity.class, Float.TYPE, "f_20769_", "health");
         }
         if (DEATH_TIME_HANDLE == null) {
-            DEATH_TIME_FIELD = ImmortalEnforcer.findReflectionField(LivingEntity.class, Integer.TYPE, "f_20962_", "deathTime");
+            DEATH_TIME_FIELD = ImmortalEnforcer.findReflectionField(LivingEntity.class, Integer.TYPE, "f_20919_", "deathTime");
         }
         if (DEAD_HANDLE == null) {
-            DEAD_FIELD = ImmortalEnforcer.findReflectionField(LivingEntity.class, Boolean.TYPE, "f_20960_", "dead");
+            DEAD_FIELD = ImmortalEnforcer.findReflectionField(LivingEntity.class, Boolean.TYPE, "f_20890_", "dead");
         }
         if (HURT_TIME_HANDLE == null) {
-            HURT_TIME_FIELD = ImmortalEnforcer.findReflectionField(LivingEntity.class, Integer.TYPE, "f_20955_", "hurtTime");
+            HURT_TIME_FIELD = ImmortalEnforcer.findReflectionField(LivingEntity.class, Integer.TYPE, "f_20916_", "hurtTime");
         }
         if (REMOVAL_REASON_HANDLE == null) {
-            REMOVAL_REASON_FIELD = ImmortalEnforcer.findReflectionField(Entity.class, Entity.RemovalReason.class, "f_146801_", "removalReason");
+            REMOVAL_REASON_FIELD = ImmortalEnforcer.findReflectionField(Entity.class, Entity.RemovalReason.class, "f_146795_", "removalReason");
         }
         try {
             for (Class clazz = Entity.class; clazz != null; clazz = clazz.getSuperclass()) {
@@ -918,7 +952,7 @@ public class ImmortalEnforcer {
             {}
         }
         try {
-            for (String name : new String[]{"f_135354_", "itemsById"}) {
+            for (String name : new String[]{"f_135345_", "itemsById"}) {
                 try {
                     ENTITY_DATA_ITEMS_BY_ID = SynchedEntityData.class.getDeclaredField(name);
                     ENTITY_DATA_ITEMS_BY_ID.setAccessible(true);
@@ -947,8 +981,405 @@ public class ImmortalEnforcer {
         catch (Throwable e) {
             {}
         }
-        VANILLA_FLOAT_FIELDS = Set.of("xo", "yo", "zo", "xOld", "yOld", "zOld", "yRot", "xRot", "yRotO", "xRotO", "yBRot", "yBRotO", "fallDistance", "nextFlap", "eyeHeight", "f_19794_", "f_19795_", "f_19796_", "f_19862_", "f_19863_", "f_19791_", "f_19792_", "f_19793_", "f_19799_", "f_19797_", "f_19798_", "f_19858_", "f_19859_", "f_19860_", "f_19861_", "f_19835_", "f_19838_", "health", "lastHurt", "animStep", "animStepO", "yBodyRot", "yBodyRotO", "yHeadRot", "yHeadRotO", "speed", "flyingSpeed", "attackAnim", "oAttackAnim", "animationSpeed", "animationSpeedOld", "animationPosition", "f_20958_", "f_20959_", "f_20956_", "f_20947_", "f_20948_", "f_20949_", "f_20950_", "f_20951_", "f_20952_", "f_20953_", "f_20954_", "f_110151_", "f_267362_", "f_267363_", "f_267364_", "bob", "oBob", "f_36076_", "f_36077_", "jumpMovementFactor");
-        VANILLA_BOOLEAN_FIELDS = Set.of("onGround", "horizontalCollision", "verticalCollision", "verticalCollisionBelow", "minorHorizontalCollision", "hurtMarked", "noPhysics", "noCulling", "hasImpulse", "isInsidePortal", "invulnerable", "firstTick", "f_19854_", "f_19855_", "f_19816_", "f_19817_", "f_19818_", "f_19840_", "f_19841_", "f_19819_", "f_19847_", "f_19839_", "f_19846_", "f_19826_", "f_19820_", "f_146813_", "f_146812_", "f_19849_", "wasTouchingWater", "wasEyeInWater", "touchingUnloadedChunk", "isInPowderSnow", "wasInPowderSnow", "f_146873_", "f_146871_", "f_147240_", "dead", "jumping", "effectsDirty", "autoSpinAttack", "discardFriction", "useItem", "f_20960_", "f_20963_", "f_21014_", "f_110152_", "f_20966_", "f_20918_", "reducedDebugInfo", "wasUnderwater", "f_36078_", "f_36079_", "persistenceRequired", "aggressive", "f_21345_", "f_21359_");
+        try {
+            for (String fieldName : new String[]{"active", "f_156903_", "passive", "f_156904_"}) {
+                try {
+                    Field f = net.minecraft.world.level.entity.EntityTickList.class.getDeclaredField(fieldName);
+                    f.setAccessible(true);
+                    if (tickListActiveField == null && (fieldName.equals("active") || fieldName.equals("f_156903_"))) {
+                        tickListActiveField = f;
+                    }
+                    break;
+                } catch (NoSuchFieldException ignored) {}
+            }
+        } catch (Throwable ignored) {}
+        VANILLA_FLOAT_FIELDS = Set.of("xo", "yo", "zo", "xOld", "yOld", "zOld", "yRot", "xRot", "yRotO", "xRotO", "yBRot", "yBRotO", "fallDistance", "nextFlap", "eyeHeight", "f_19854_", "f_19855_", "f_19856_", "f_19790_", "f_19791_", "f_19792_", "f_19857_", "f_19858_", "f_19859_", "f_19860_", "f_19789_", "f_19816_", "f_19793_", "f_19829_", "f_19787_", "f_19867_", "f_19788_", "health", "lastHurt", "animStep", "animStepO", "yBodyRot", "yBodyRotO", "yHeadRot", "yHeadRotO", "speed", "flyingSpeed", "attackAnim", "oAttackAnim", "animationSpeed", "animationSpeedOld", "animationPosition", "f_20898_", "f_20894_", "f_20895_", "f_20883_", "f_20884_", "f_20885_", "f_20886_", "f_20953_", "f_20921_", "f_20920_", "f_20955_", "f_20931_", "f_20932_", "bob", "oBob", "f_36100_", "f_36099_", "jumpMovementFactor");
+        VANILLA_BOOLEAN_FIELDS = Set.of("onGround", "horizontalCollision", "verticalCollision", "verticalCollisionBelow", "minorHorizontalCollision", "hurtMarked", "noPhysics", "noCulling", "hasImpulse", "isInsidePortal", "invulnerable", "firstTick", "f_19861_", "f_19862_", "f_19863_", "f_201939_", "f_185931_", "f_19864_", "f_19794_", "f_19811_", "f_19812_", "f_19817_", "f_19840_", "f_19803_", "f_19798_", "f_19800_", "f_146808_", "f_146809_", "f_146813_", "wasTouchingWater", "wasEyeInWater", "touchingUnloadedChunk", "isInPowderSnow", "wasInPowderSnow", "dead", "jumping", "effectsDirty", "autoSpinAttack", "discardFriction", "useItem", "f_20890_", "f_20899_", "f_20948_", "f_147183_", "f_20911_", "reducedDebugInfo", "wasUnderwater", "f_36076_", "f_36085_", "persistenceRequired", "aggressive", "f_21353_");
+    }
+
+    private static Field entityManagerField_IE = null;
+    private static boolean entityManagerField_IE_resolved = false;
+    private static Field entityLookupField_IE = null;
+    private static boolean entityLookupField_IE_resolved = false;
+    private static Field lookupByIdField_IE = null;
+    private static boolean lookupByIdField_IE_resolved = false;
+    private static Field lookupByUuidField_IE = null;
+    private static boolean lookupByUuidField_IE_resolved = false;
+    private static Field knownUuidsField_IE = null;
+    private static boolean knownUuidsField_IE_resolved = false;
+    private static Field sectionStorageField_IE = null;
+    private static boolean sectionStorageField_IE_resolved = false;
+    private static Method sectionStorageGetOrCreateSection_IE = null;
+    private static boolean sectionStorageGetOrCreate_IE_resolved = false;
+    private static Method sectionAddMethod_IE = null;
+    private static boolean sectionAddMethod_IE_resolved = false;
+    private static Field levelCallbackField_IE = null;
+    private static boolean levelCallbackField_IE_resolved = false;
+    private static Field callbacksField_IE = null;
+    private static boolean callbacksField_IE_resolved = false;
+    private static Field chunkMapEntityMapField_IE = null;
+    private static boolean chunkMapEntityMapField_IE_resolved = false;
+    private static Method chunkMapAddEntityMethod_IE = null;
+    private static boolean chunkMapAddEntityMethod_IE_resolved = false;
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public static void ensureEntityRegistration(Entity entity, ServerLevel level) {
+        if (entity == null || level == null) return;
+        UUID uuid = entity.getUUID();
+        if (!CombatRegistry.isInImmortalSet(uuid)) return;
+        try {
+            if (!entityManagerField_IE_resolved) {
+                entityManagerField_IE_resolved = true;
+                for (String name : new String[]{"f_143244_", "entityManager"}) {
+                    try {
+                        entityManagerField_IE = ServerLevel.class.getDeclaredField(name);
+                        entityManagerField_IE.setAccessible(true);
+                        break;
+                    } catch (NoSuchFieldException ignored) {}
+                }
+            }
+            if (entityManagerField_IE == null) return;
+            Object entityManager = entityManagerField_IE.get(level);
+            if (entityManager == null) return;
+
+            if (!entityLookupField_IE_resolved) {
+                entityLookupField_IE_resolved = true;
+                for (String name : new String[]{"f_157494_", "visibleEntityStorage", "f_157496_"}) {
+                    try {
+                        entityLookupField_IE = entityManager.getClass().getDeclaredField(name);
+                        entityLookupField_IE.setAccessible(true);
+                        break;
+                    } catch (NoSuchFieldException ignored) {}
+                }
+                if (entityLookupField_IE == null) {
+                    for (Field f : FieldAccessUtil.safeGetDeclaredFields(entityManager.getClass())) {
+                        if (f.getType().getSimpleName().contains("EntityLookup")) {
+                            f.setAccessible(true);
+                            entityLookupField_IE = f;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (entityLookupField_IE == null) return;
+            Object entityLookup = entityLookupField_IE.get(entityManager);
+            if (entityLookup == null) return;
+
+            if (!lookupByIdField_IE_resolved) {
+                lookupByIdField_IE_resolved = true;
+                for (String name : new String[]{"f_156807_", "byId"}) {
+                    try {
+                        lookupByIdField_IE = entityLookup.getClass().getDeclaredField(name);
+                        lookupByIdField_IE.setAccessible(true);
+                        break;
+                    } catch (NoSuchFieldException ignored) {}
+                }
+                if (lookupByIdField_IE == null) {
+                    for (Field f : FieldAccessUtil.safeGetDeclaredFields(entityLookup.getClass())) {
+                        if (f.getType().getName().contains("Int2Object")) {
+                            f.setAccessible(true);
+                            lookupByIdField_IE = f;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!lookupByUuidField_IE_resolved) {
+                lookupByUuidField_IE_resolved = true;
+                for (String name : new String[]{"f_156808_", "byUuid"}) {
+                    try {
+                        lookupByUuidField_IE = entityLookup.getClass().getDeclaredField(name);
+                        lookupByUuidField_IE.setAccessible(true);
+                        break;
+                    } catch (NoSuchFieldException ignored) {}
+                }
+                if (lookupByUuidField_IE == null) {
+                    for (Field f : FieldAccessUtil.safeGetDeclaredFields(entityLookup.getClass())) {
+                        if (!Modifier.isStatic(f.getModifiers()) && Map.class.isAssignableFrom(f.getType())) {
+                            f.setAccessible(true);
+                            lookupByUuidField_IE = f;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (lookupByIdField_IE != null) {
+                Object byIdMap = lookupByIdField_IE.get(entityLookup);
+                if (byIdMap != null) {
+                    try {
+                        Method containsKey = byIdMap.getClass().getMethod("containsKey", int.class);
+                        boolean contains = (boolean) containsKey.invoke(byIdMap, entity.getId());
+                        if (!contains) {
+                            Method put = byIdMap.getClass().getMethod("put", int.class, Object.class);
+                            put.invoke(byIdMap, entity.getId(), entity);
+                        }
+                    } catch (Throwable ignored) {
+                        try {
+                            Method containsKey = byIdMap.getClass().getMethod("containsKey", Object.class);
+                            boolean contains = (boolean) containsKey.invoke(byIdMap, entity.getId());
+                            if (!contains) {
+                                Method put = byIdMap.getClass().getMethod("put", Object.class, Object.class);
+                                put.invoke(byIdMap, entity.getId(), entity);
+                            }
+                        } catch (Throwable ignored2) {}
+                    }
+                }
+            }
+
+            if (lookupByUuidField_IE != null) {
+                Object byUuidMap = lookupByUuidField_IE.get(entityLookup);
+                if (byUuidMap instanceof Map) {
+                    Map map = (Map) byUuidMap;
+                    if (!map.containsKey(uuid)) {
+                        map.put(uuid, entity);
+                    }
+                }
+            }
+
+            if (!knownUuidsField_IE_resolved) {
+                knownUuidsField_IE_resolved = true;
+                for (String name : new String[]{"f_157491_", "knownUuids"}) {
+                    try {
+                        knownUuidsField_IE = entityManager.getClass().getDeclaredField(name);
+                        knownUuidsField_IE.setAccessible(true);
+                        break;
+                    } catch (NoSuchFieldException ignored) {}
+                }
+                if (knownUuidsField_IE == null) {
+                    for (Field f : FieldAccessUtil.safeGetDeclaredFields(entityManager.getClass())) {
+                        if (!Modifier.isStatic(f.getModifiers()) && Set.class.isAssignableFrom(f.getType())) {
+                            f.setAccessible(true);
+                            knownUuidsField_IE = f;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (knownUuidsField_IE != null) {
+                Object knownUuids = knownUuidsField_IE.get(entityManager);
+                if (knownUuids instanceof Set) {
+                    Set uuidSet = (Set) knownUuids;
+                    if (!uuidSet.contains(uuid)) {
+                        uuidSet.add(uuid);
+                    }
+                }
+            }
+
+            if (!sectionStorageField_IE_resolved) {
+                sectionStorageField_IE_resolved = true;
+                for (String name : new String[]{"f_157495_", "sectionStorage"}) {
+                    try {
+                        sectionStorageField_IE = entityManager.getClass().getDeclaredField(name);
+                        sectionStorageField_IE.setAccessible(true);
+                        break;
+                    } catch (NoSuchFieldException ignored) {}
+                }
+                if (sectionStorageField_IE == null) {
+                    for (Field f : FieldAccessUtil.safeGetDeclaredFields(entityManager.getClass())) {
+                        if (!Modifier.isStatic(f.getModifiers()) && f.getType().getSimpleName().contains("EntitySectionStorage")) {
+                            f.setAccessible(true);
+                            sectionStorageField_IE = f;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (sectionStorageField_IE != null) {
+                Object sectionStorage = sectionStorageField_IE.get(entityManager);
+                if (sectionStorage != null) {
+                    if (!sectionStorageGetOrCreate_IE_resolved) {
+                        sectionStorageGetOrCreate_IE_resolved = true;
+                        for (String name : new String[]{"m_156893_", "getOrCreateSection"}) {
+                            try {
+                                sectionStorageGetOrCreateSection_IE = sectionStorage.getClass().getMethod(name, long.class);
+                                break;
+                            } catch (NoSuchMethodException ignored) {}
+                        }
+                    }
+                    if (!sectionAddMethod_IE_resolved) {
+                        sectionAddMethod_IE_resolved = true;
+                        for (String name : new String[]{"m_188346_", "add"}) {
+                            try {
+                                Class<?> sectionClass = sectionStorage.getClass();
+                                for (Method m : sectionClass.getMethods()) {
+                                    if ((m.getName().equals("m_188346_") || m.getName().equals("add"))
+                                            && m.getParameterCount() == 1) {
+                                        sectionAddMethod_IE = m;
+                                        break;
+                                    }
+                                }
+                                break;
+                            } catch (Throwable ignored) {}
+                        }
+                    }
+                    if (sectionStorageGetOrCreateSection_IE != null) {
+                        try {
+                            int sx = SectionPos.blockToSectionCoord(entity.getBlockX());
+                            int sy = SectionPos.blockToSectionCoord(entity.getBlockY());
+                            int sz = SectionPos.blockToSectionCoord(entity.getBlockZ());
+                            long sectionKey = SectionPos.asLong(sx, sy, sz);
+                            Object section = sectionStorageGetOrCreateSection_IE.invoke(sectionStorage, sectionKey);
+                            if (section != null && sectionAddMethod_IE != null) {
+                                sectionAddMethod_IE.invoke(section, entity);
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                }
+            }
+
+            try {
+                Object chunkMap = level.getChunkSource().chunkMap;
+                if (chunkMap != null) {
+                    if (!chunkMapEntityMapField_IE_resolved) {
+                        chunkMapEntityMapField_IE_resolved = true;
+                        for (String name : new String[]{"f_140150_", "entityMap"}) {
+                            try {
+                                chunkMapEntityMapField_IE = chunkMap.getClass().getDeclaredField(name);
+                                chunkMapEntityMapField_IE.setAccessible(true);
+                                break;
+                            } catch (NoSuchFieldException ignored) {}
+                        }
+                        if (chunkMapEntityMapField_IE == null) {
+                            for (Field f : FieldAccessUtil.safeGetDeclaredFields(chunkMap.getClass())) {
+                                if (!Modifier.isStatic(f.getModifiers()) && f.getType().getName().contains("Int2Object")) {
+                                    f.setAccessible(true);
+                                    chunkMapEntityMapField_IE = f;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (chunkMapEntityMapField_IE != null) {
+                        Object entityMap = chunkMapEntityMapField_IE.get(chunkMap);
+                        if (entityMap != null) {
+                            boolean inChunkMap = false;
+                            try {
+                                Method containsKey = entityMap.getClass().getMethod("containsKey", int.class);
+                                inChunkMap = (boolean) containsKey.invoke(entityMap, entity.getId());
+                            } catch (Throwable t) {
+                                try {
+                                    Method containsKey = entityMap.getClass().getMethod("containsKey", Object.class);
+                                    inChunkMap = (boolean) containsKey.invoke(entityMap, entity.getId());
+                                } catch (Throwable ignored) {}
+                            }
+                            if (!inChunkMap) {
+                                if (!chunkMapAddEntityMethod_IE_resolved) {
+                                    chunkMapAddEntityMethod_IE_resolved = true;
+                                    for (String name : new String[]{"m_140174_", "addEntity"}) {
+                                        try {
+                                            chunkMapAddEntityMethod_IE = chunkMap.getClass().getDeclaredMethod(name, Entity.class);
+                                            chunkMapAddEntityMethod_IE.setAccessible(true);
+                                            break;
+                                        } catch (NoSuchMethodException ignored) {}
+                                    }
+                                }
+                                if (chunkMapAddEntityMethod_IE != null) {
+                                    try {
+                                        chunkMapAddEntityMethod_IE.invoke(chunkMap, entity);
+                                    } catch (Throwable ignored) {}
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+
+            if (!levelCallbackField_IE_resolved) {
+                levelCallbackField_IE_resolved = true;
+                for (String name : new String[]{"f_146801_", "levelCallback"}) {
+                    try {
+                        levelCallbackField_IE = Entity.class.getDeclaredField(name);
+                        levelCallbackField_IE.setAccessible(true);
+                        break;
+                    } catch (NoSuchFieldException ignored) {}
+                }
+            }
+            if (levelCallbackField_IE != null) {
+                Object cb = levelCallbackField_IE.get(entity);
+                boolean isNull = (cb == null);
+                boolean isNullCb = false;
+                boolean isStub = false;
+                if (!isNull) {
+                    try {
+                        isNullCb = (cb == EntityInLevelCallback.NULL);
+                    } catch (Throwable ignored) {}
+                    if (!isNullCb) {
+                        String cbClass = cb.getClass().getName();
+                        if (!cbClass.startsWith("net.minecraft.") && !cbClass.startsWith("com.mojang.")) {
+                            Object backup = CALLBACK_BACKUP.get(uuid);
+                            if (backup != null && backup != cb && backup != EntityInLevelCallback.NULL) {
+                                isStub = true;
+                            }
+                        }
+                    }
+                }
+                if (isNull || isNullCb || isStub) {
+                    Object restored = CALLBACK_BACKUP.get(uuid);
+                    if (restored != null && restored != EntityInLevelCallback.NULL) {
+                        levelCallbackField_IE.set(entity, restored);
+                    } else {
+                        try {
+                            if (!callbacksField_IE_resolved) {
+                                callbacksField_IE_resolved = true;
+                                for (String name : new String[]{"f_157492_", "callbacks", "levelCallback"}) {
+                                    try {
+                                        callbacksField_IE = entityManager.getClass().getDeclaredField(name);
+                                        callbacksField_IE.setAccessible(true);
+                                        break;
+                                    } catch (NoSuchFieldException ignored) {}
+                                }
+                            }
+                            if (callbacksField_IE != null) {
+                                Object levelCallbackImpl = callbacksField_IE.get(entityManager);
+                                if (levelCallbackImpl != null && levelCallbackImpl instanceof EntityInLevelCallback) {
+                                    levelCallbackField_IE.set(entity, levelCallbackImpl);
+                                    CALLBACK_BACKUP.put(uuid, levelCallbackImpl);
+                                }
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                } else if (cb != null && cb != EntityInLevelCallback.NULL) {
+                    String cbClass = cb.getClass().getName();
+                    if (cbClass.startsWith("net.minecraft.") || cbClass.startsWith("com.mojang.")) {
+                        CALLBACK_BACKUP.put(uuid, cb);
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    @SuppressWarnings("unchecked")
+    public static void ensureInTickList(Entity entity, net.minecraft.server.level.ServerLevel level) {
+        try {
+            if (!CombatRegistry.isInImmortalSet(entity.getUUID())) return;
+            Object tl = level.entityTickList;
+            if (tl == null) return;
+            if (tickListActiveField == null) return;
+            Object map = tickListActiveField.get(tl);
+            if (map == null) return;
+            java.lang.reflect.Method containsKey = map.getClass().getMethod("containsKey", int.class);
+            boolean exists = (boolean) containsKey.invoke(map, entity.getId());
+            if (!exists) {
+                java.lang.reflect.Method put = map.getClass().getMethod("put", int.class, Object.class);
+                put.invoke(map, entity.getId(), entity);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    public static void cleanupCallbackBackup(UUID uuid) {
+        CALLBACK_BACKUP.remove(uuid);
+        POSITION_BACKUP.remove(uuid);
+    }
+
+    public static void cleanupStaleCallbackBackups() {
+        try {
+            CALLBACK_BACKUP.entrySet().removeIf(entry ->
+                    !CombatRegistry.isInImmortalSet(entry.getKey()));
+        } catch (Throwable ignored) {}
+        try {
+            POSITION_BACKUP.entrySet().removeIf(entry ->
+                    !CombatRegistry.isInImmortalSet(entry.getKey()));
+        } catch (Throwable ignored) {}
     }
 }
-

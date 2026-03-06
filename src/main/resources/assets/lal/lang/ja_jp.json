@@ -1,12 +1,15 @@
 {
   "item.lal.lal_sword": "LAL剣",
   "item.lal.lal_bow": "LAL弓",
-  "item.lal.lal_breaker": "LALブレイカー",
+  "item.lal.lal_breaker": "LALブレイカー (WIP)",
   "item.lal.lal_helmet": "LALヘルメット",
   "item.lal.lal_chestplate": "LALチェストプレート",
   "item.lal.lal_leggings": "LALレギンス",
   "item.lal.lal_boots": "LALブーツ",
   "itemGroup.lal": "LAL",
   "death.attack.lal_attack": "%1$s はLALってしまった",
-  "death.attack.lal_attack.player": "%1$s は%2$s によりLALった"
+  "death.attack.lal_attack.player": "%1$s は%2$s によりLALった",
+  "item.lal.lal_entity_spawner": "LAL Entity Spawn Egg (WIP)",
+  "item.lal.lal_entity_remover": "LAL Entity Remover (WIP)",
+  "entity.lal.lal_entity_proxy": "LALentity (WIP)"
 }

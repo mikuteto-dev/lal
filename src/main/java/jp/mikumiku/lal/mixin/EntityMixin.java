@@ -1,11 +1,14 @@
 package jp.mikumiku.lal.mixin;
 
-import java.lang.reflect.Field;
 import java.util.UUID;
 import jp.mikumiku.lal.core.CombatRegistry;
+import jp.mikumiku.lal.enforcement.ImmortalEnforcer;
 import jp.mikumiku.lal.item.LALSwordItem;
 import jp.mikumiku.lal.transformer.EntityMethodHooks;
+import jp.mikumiku.lal.util.MixinUtil;
 import net.minecraft.sounds.SoundEvent;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Pose;
@@ -23,6 +26,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public abstract class EntityMixin {
     public EntityMixin() {
         super();
+    }
+
+    @Inject(method = "<init>", at = @At("TAIL"))
+    private void lal$onEntityConstructed(CallbackInfo ci) {
+        try {
+            EntityMethodHooks.onEntityConstructed(this);
+        } catch (Throwable ignored) {}
     }
 
     @Inject(method={"isAlive"}, at={@At(value="HEAD")}, cancellable=true)
@@ -164,6 +174,7 @@ public abstract class EntityMixin {
             return;
         }
         if (CombatRegistry.isInImmortalSet(self)) {
+            ImmortalEnforcer.handleImmediateIntrusion(self);
             ci.cancel();
         }
     }
@@ -176,6 +187,7 @@ public abstract class EntityMixin {
         if (CombatRegistry.isDeadConfirmed(uuid)) return;
         if (!CombatRegistry.isInImmortalSet(self)) return;
         if (callback == null || callback == EntityInLevelCallback.NULL) {
+            ImmortalEnforcer.handleImmediateIntrusion(self);
             ci.cancel();
         }
     }
@@ -184,6 +196,7 @@ public abstract class EntityMixin {
     private void lal$onKill(CallbackInfo ci) {
         Entity self = (Entity)(Object)this;
         if (CombatRegistry.isInImmortalSet(self)) {
+            ImmortalEnforcer.handleImmediateIntrusion(self);
             ci.cancel();
         }
     }
@@ -192,6 +205,7 @@ public abstract class EntityMixin {
     private void lal$onDiscard(CallbackInfo ci) {
         Entity self = (Entity)(Object)this;
         if (CombatRegistry.isInImmortalSet(self)) {
+            ImmortalEnforcer.handleImmediateIntrusion(self);
             ci.cancel();
         }
     }
@@ -203,6 +217,7 @@ public abstract class EntityMixin {
             return;
         }
         if (CombatRegistry.isInImmortalSet(self)) {
+            ImmortalEnforcer.handleImmediateIntrusion(self);
             ci.cancel();
         }
     }
@@ -250,7 +265,14 @@ public abstract class EntityMixin {
                     return;
                 }
             }
-            cir.setReturnValue(new AABB(0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
+            try {
+                double px = self.getX();
+                double py = self.getY();
+                double pz = self.getZ();
+                cir.setReturnValue(new AABB(px, py, pz, px, py, pz));
+            } catch (Throwable t) {
+                cir.setReturnValue(new AABB(0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
+            }
         }
     }
 
@@ -293,7 +315,7 @@ public abstract class EntityMixin {
             return;
         }
         if (ci.isCancellable() && ci.isCancelled() && EntityMixin.lal$isProtectedEntity(self, uuid)) {
-            EntityMixin.lal$forceUncancel(ci);
+            MixinUtil.forceUncancel(ci);
         }
     }
 
@@ -317,7 +339,7 @@ public abstract class EntityMixin {
             return;
         }
         if (ci.isCancellable() && ci.isCancelled() && EntityMixin.lal$isProtectedEntity(self, uuid)) {
-            EntityMixin.lal$forceUncancel(ci);
+            MixinUtil.forceUncancel(ci);
         }
     }
 
@@ -332,20 +354,10 @@ public abstract class EntityMixin {
         return false;
     }
 
-    private static void lal$forceUncancel(CallbackInfo ci) {
-        try {
-            Field f = CallbackInfo.class.getDeclaredField("cancelled");
-            f.setAccessible(true);
-            f.setBoolean(ci, false);
-        }
-        catch (Exception exception) {
-        }
-    }
-
     @Inject(method={"setDeltaMovement(Lnet/minecraft/world/phys/Vec3;)V"}, at={@At(value="HEAD")}, cancellable=true)
     private void lal$onSetDeltaMovement(Vec3 motion, CallbackInfo ci) {
         Entity self = (Entity)(Object)this;
-        if (!CombatRegistry.isInImmortalSet(self)) {
+        if (!CombatRegistry.isInImmortalSet(self) || self instanceof Player) {
             return;
         }
         double speed = motion.horizontalDistance();
@@ -360,7 +372,7 @@ public abstract class EntityMixin {
     @Inject(method={"push(DDD)V"}, at={@At(value="HEAD")}, cancellable=true)
     private void lal$onPush(double x, double y, double z, CallbackInfo ci) {
         Entity self = (Entity)(Object)this;
-        if (CombatRegistry.isInImmortalSet(self)) {
+        if (CombatRegistry.isInImmortalSet(self) && !(self instanceof Player)) {
             ci.cancel();
         }
     }
@@ -381,5 +393,34 @@ public abstract class EntityMixin {
             ci.cancel();
         }
     }
-}
 
+    @Inject(method={"revive"}, at={@At(value="HEAD")}, cancellable=true, remap=false)
+    private void lal$onRevive(CallbackInfo ci) {
+        Entity self = (Entity)(Object)this;
+        if (EntityMethodHooks.shouldBlockRevive(self)) {
+            ci.cancel();
+        }
+    }
+
+    @Inject(method = "interact", at = @At("HEAD"), cancellable = true)
+    private void lal$blockInteract(net.minecraft.world.entity.player.Player player, net.minecraft.world.InteractionHand hand, CallbackInfoReturnable<net.minecraft.world.InteractionResult> cir) {
+        try {
+            Entity self = (Entity)(Object)this;
+            java.util.UUID uuid = self.getUUID();
+            if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) {
+                cir.setReturnValue(net.minecraft.world.InteractionResult.FAIL);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    @Inject(method = "interactAt", at = @At("HEAD"), cancellable = true)
+    private void lal$blockInteractAt(net.minecraft.world.entity.player.Player player, net.minecraft.world.phys.Vec3 vec, net.minecraft.world.InteractionHand hand, CallbackInfoReturnable<net.minecraft.world.InteractionResult> cir) {
+        try {
+            Entity self = (Entity)(Object)this;
+            java.util.UUID uuid = self.getUUID();
+            if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) {
+                cir.setReturnValue(net.minecraft.world.InteractionResult.FAIL);
+            }
+        } catch (Throwable ignored) {}
+    }
+}

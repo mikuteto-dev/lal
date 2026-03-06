@@ -1,6 +1,7 @@
 {
   "required": true,
   "minVersion": "0.8",
+  "priority": 2147483647,
   "package": "jp.mikumiku.lal.mixin",
   "compatibilityLevel": "JAVA_17",
   "refmap": "lal.refmap.json",
@@ -16,13 +17,20 @@
     "EntityTickListMixin",
     "ChunkSerializerMixin",
     "MobMixin",
-    "PersistentEntitySectionManagerMixin"
+    "PersistentEntitySectionManagerMixin",
+    "SynchedEntityDataItemMixin",
+    "PersistentEntitySectionManagerCallbackMixin",
+    "MinecraftServerMixin",
+    "PlayerListMixin",
+    "AbstractArrowMixin",
+    "ServerPlayerMixin"
   ],
   "client": [
     "MinecraftMixin",
     "ScreenEffectRendererMixin",
     "ClientPacketListenerMixin",
-    "LivingEntityRendererMixin"
+    "LivingEntityRendererMixin",
+    "LevelRendererMixin"
   ],
   "injectors": {
     "defaultRequire": 1

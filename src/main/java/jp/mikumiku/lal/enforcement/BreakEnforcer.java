@@ -273,7 +273,7 @@ public class BreakEnforcer {
     private static void resolveItemsByIdField() {
         if (itemsByIdResolved) return;
         itemsByIdResolved = true;
-        for (String name : new String[]{"f_135354_", "itemsById"}) {
+        for (String name : new String[]{"f_135345_", "itemsById"}) {
             try {
                 ITEMS_BY_ID_FIELD = SynchedEntityData.class.getDeclaredField(name);
                 ITEMS_BY_ID_FIELD.setAccessible(true);

@@ -4,32 +4,52 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.world.entity.Entity;
-import net.minecraftforge.api.distmarker.Dist;
-import net.minecraftforge.fml.DistExecutor;
-import net.minecraftforge.network.NetworkEvent;
+import net.minecraft.world.entity.player.Player;
 
-import java.util.function.Supplier;
-
-public class RemoveEntityPacket {
+public class RemoveEntityPacket implements LALPacket {
     private final int entityId;
+    private final byte[] hmac;
 
     public RemoveEntityPacket(int entityId) {
         this.entityId = entityId;
+        byte[] key = LALNetwork.getServerSecret();
+        byte[] data = java.nio.ByteBuffer.allocate(4).putInt(entityId).array();
+        this.hmac = LALNetwork.computeHmac(key, data);
     }
 
-    public static void encode(RemoveEntityPacket msg, FriendlyByteBuf buf) {
-        buf.writeInt(msg.entityId);
+    private RemoveEntityPacket(int entityId, byte[] hmac) {
+        this.entityId = entityId;
+        this.hmac = hmac;
+    }
+
+    @Override
+    public byte getPacketType() {
+        return LALNetwork.PKT_REMOVE_ENTITY;
+    }
+
+    @Override
+    public void encodeTo(FriendlyByteBuf buf) {
+        buf.writeInt(entityId);
+        buf.writeByteArray(hmac);
     }
 
     public static RemoveEntityPacket decode(FriendlyByteBuf buf) {
-        return new RemoveEntityPacket(buf.readInt());
+        int entityId = buf.readInt();
+        byte[] hmac = buf.readByteArray(256);
+        return new RemoveEntityPacket(entityId, hmac);
     }
 
-    public static void handle(RemoveEntityPacket msg, Supplier<NetworkEvent.Context> ctx) {
-        ctx.get().enqueueWork(() -> {
-            DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () -> handleClient(msg.entityId));
-        });
-        ctx.get().setPacketHandled(true);
+    public static void decodeAndHandle(FriendlyByteBuf buf) {
+        RemoveEntityPacket msg = decode(buf);
+        if (msg.entityId <= 0) return;
+        byte[] clientKey = LALNetwork.getClientSecret();
+        if (clientKey != null && msg.hmac != null && msg.hmac.length > 0) {
+            byte[] data = java.nio.ByteBuffer.allocate(4).putInt(msg.entityId).array();
+            if (!LALNetwork.verifyHmac(clientKey, data, msg.hmac)) {
+                return;
+            }
+        }
+        handleClient(msg.entityId);
     }
 
     private static void handleClient(int entityId) {
@@ -39,13 +59,16 @@ public class RemoveEntityPacket {
             if (level != null) {
                 Entity entity = level.getEntity(entityId);
                 if (entity != null) {
+                    if (entity == mc.player || entity instanceof Player) {
+                        return;
+                    }
                     try {
                         entity.setRemoved(Entity.RemovalReason.KILLED);
                     } catch (Throwable ignored) {}
                     if (!entity.isRemoved()) {
                         try {
                             java.lang.reflect.Field f = null;
-                            for (String name : new String[]{"removalReason", "f_146801_"}) {
+                            for (String name : new String[]{"removalReason", "f_146795_"}) {
                                 try {
                                     f = Entity.class.getDeclaredField(name);
                                     f.setAccessible(true);
@@ -62,6 +85,6 @@ public class RemoveEntityPacket {
                     } catch (Throwable ignored) {}
                 }
             }
-        } catch (Exception ignored) {}
+        } catch (Throwable ignored) {}
     }
 }

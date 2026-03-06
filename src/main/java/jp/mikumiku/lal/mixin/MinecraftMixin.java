@@ -5,6 +5,7 @@ import java.lang.reflect.Method;
 import jp.mikumiku.lal.core.CombatRegistry;
 import jp.mikumiku.lal.item.LALSwordItem;
 import jp.mikumiku.lal.transformer.EntityMethodHooks;
+import jp.mikumiku.lal.util.MixinUtil;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.DeathScreen;
 import net.minecraft.client.gui.screens.Screen;
@@ -41,6 +42,13 @@ public class MinecraftMixin {
         }
     }
 
+    @Inject(method = "tick", at = @At("TAIL"))
+    private void lal$onClientTick(CallbackInfo ci) {
+        try {
+            jp.mikumiku.lal.client.LALClientHandler.onClientTickDirect();
+        } catch (Throwable ignored) {}
+    }
+
     @Inject(method = "runTick", at = @At("HEAD"))
     private void lal$onRunTick(boolean renderLevel, CallbackInfo ci) {
         Minecraft mc = (Minecraft)(Object)this;
@@ -56,7 +64,7 @@ public class MinecraftMixin {
         try {
             if (!lal$timerFieldsResolved) {
                 lal$timerFieldsResolved = true;
-                for (String name : new String[]{"f_91021_", "timer"}) {
+                for (String name : new String[]{"f_90991_", "timer"}) {
                     try {
                         lal$timerField = Minecraft.class.getDeclaredField(name);
                         lal$timerField.setAccessible(true);
@@ -66,7 +74,7 @@ public class MinecraftMixin {
                 if (lal$timerField == null) return;
                 Object timer = lal$timerField.get(mc);
                 if (timer == null) return;
-                for (String name : new String[]{"msPerTick", "f_92523_"}) {
+                for (String name : new String[]{"msPerTick", "f_92521_"}) {
                     try {
                         lal$msPerTickField = timer.getClass().getDeclaredField(name);
                         lal$msPerTickField.setAccessible(true);
@@ -97,7 +105,7 @@ public class MinecraftMixin {
             if (!lal$tickMethodsResolved) {
                 lal$tickMethodsResolved = true;
                 if (mc.gameRenderer != null) {
-                    for (String name : new String[]{"m_109093_", "pick"}) {
+                    for (String name : new String[]{"m_109087_", "pick"}) {
                         try {
                             lal$pickMethod = mc.gameRenderer.getClass().getDeclaredMethod(name, float.class);
                             lal$pickMethod.setAccessible(true);
@@ -106,7 +114,7 @@ public class MinecraftMixin {
                     }
                 }
                 if (mc.gameMode != null) {
-                    for (String name : new String[]{"m_105190_", "tick"}) {
+                    for (String name : new String[]{"m_105287_", "tick"}) {
                         try {
                             lal$gameModeTickMethod = mc.gameMode.getClass().getDeclaredMethod(name);
                             lal$gameModeTickMethod.setAccessible(true);
@@ -137,8 +145,7 @@ public class MinecraftMixin {
                 health = player.getEntityData().get(LivingEntity.DATA_HEALTH_ID);
             } catch (Exception ignored) {}
             if (health <= 0.0f) {
-                float max = player.getMaxHealth();
-                if (max <= 0.0f) max = 20.0f;
+                float max = MixinUtil.safeMaxHealth(player);
                 EntityMethodHooks.setBypass(true);
                 try {
                     player.setHealth(max);
@@ -149,14 +156,14 @@ public class MinecraftMixin {
 
             if (!lal$entityFieldsResolved) {
                 lal$entityFieldsResolved = true;
-                for (String name : new String[]{"dead", "f_20960_"}) {
+                for (String name : new String[]{"dead", "f_20890_"}) {
                     try {
                         lal$deadField = LivingEntity.class.getDeclaredField(name);
                         lal$deadField.setAccessible(true);
                         break;
                     } catch (NoSuchFieldException ignored) {}
                 }
-                for (String name : new String[]{"deathTime", "f_20962_"}) {
+                for (String name : new String[]{"deathTime", "f_20919_"}) {
                     try {
                         lal$deathTimeField = LivingEntity.class.getDeclaredField(name);
                         lal$deathTimeField.setAccessible(true);

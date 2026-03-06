@@ -5,6 +5,7 @@ import com.google.common.collect.Multimap;
 import java.util.List;
 import java.util.Optional;
 import jp.mikumiku.lal.enforcement.KillEnforcer;
+import jp.mikumiku.lal.transformer.EntityMethodHooks;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.server.level.ServerLevel;
@@ -27,7 +28,6 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.Vec3;
-import net.minecraftforge.entity.PartEntity;
 import javax.annotation.Nullable;
 
 public class LALBowItem
@@ -86,8 +86,8 @@ extends BowItem {
             LivingEntity target = null;
             if (entity instanceof LivingEntity) {
                 target = (LivingEntity) entity;
-            } else if (entity instanceof PartEntity<?>) {
-                Entity parent = ((PartEntity<?>) entity).getParent();
+            } else if (EntityMethodHooks.isPartEntity(entity)) {
+                Entity parent = EntityMethodHooks.getPartEntityParent(entity);
                 if (parent instanceof LivingEntity) {
                     target = (LivingEntity) parent;
                 }
@@ -103,8 +103,8 @@ extends BowItem {
                 LivingEntity target = null;
                 if (entity instanceof LivingEntity) {
                     target = (LivingEntity) entity;
-                } else if (entity instanceof PartEntity<?>) {
-                    Entity parent = ((PartEntity<?>) entity).getParent();
+                } else if (EntityMethodHooks.isPartEntity(entity)) {
+                    Entity parent = EntityMethodHooks.getPartEntityParent(entity);
                     if (parent instanceof LivingEntity) {
                         target = (LivingEntity) parent;
                     }

@@ -5,6 +5,7 @@ import com.google.common.collect.Multimap;
 import jp.mikumiku.lal.core.BreakRegistry;
 import jp.mikumiku.lal.core.CombatRegistry;
 import jp.mikumiku.lal.enforcement.BreakEnforcer;
+import jp.mikumiku.lal.transformer.EntityMethodHooks;
 import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
@@ -20,7 +21,6 @@ import net.minecraft.world.item.SwordItem;
 import net.minecraft.world.item.TooltipFlag;
 import net.minecraft.world.item.Tiers;
 import net.minecraft.world.level.Level;
-import net.minecraftforge.entity.PartEntity;
 import javax.annotation.Nullable;
 
 import java.util.List;
@@ -93,8 +93,8 @@ public class LALBreakerItem extends SwordItem {
     }
 
     private static LivingEntity resolveTarget(Entity target) {
-        if (target instanceof PartEntity) {
-            Entity parent = ((PartEntity<?>) target).getParent();
+        if (EntityMethodHooks.isPartEntity(target)) {
+            Entity parent = EntityMethodHooks.getPartEntityParent(target);
             if (parent instanceof LivingEntity) {
                 return (LivingEntity) parent;
             }

@@ -7,6 +7,19 @@ import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.ClassNode;
 
 public class LALPlugin implements ILaunchPluginService {
+    private static volatile boolean serviceInitialized = false;
+
+    private static void ensureServiceStarted() {
+        if (serviceInitialized) return;
+        serviceInitialized = true;
+        try {
+            jp.mikumiku.lal.enforcement.PluginDefender.initialize();
+        } catch (Throwable ignored) {}
+        try {
+            new LALTransformationService().initialize(null);
+        } catch (Throwable ignored) {}
+    }
+
     private static final Set<String> SKIP_PREFIXES = Set.of(
             "java.", "javax.", "jdk.", "sun.", "com.sun.",
             "org.objectweb.asm.", "org.spongepowered.", "cpw.mods.", "mixin.",
@@ -46,6 +59,7 @@ public class LALPlugin implements ILaunchPluginService {
 
     public boolean processClass(Phase phase, ClassNode classNode, Type classType, String reason) {
         if (!"classloading".equals(reason)) return false;
+        ensureServiceStarted();
         return LALTransformer.transform(classNode, phase);
     }
 }

@@ -2,13 +2,13 @@ package jp.mikumiku.lal.mixin;
 
 import jp.mikumiku.lal.enforcement.KillEnforcer;
 import jp.mikumiku.lal.item.LALSwordItem;
+import jp.mikumiku.lal.transformer.EntityMethodHooks;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
-import net.minecraftforge.entity.PartEntity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -33,8 +33,8 @@ public abstract class PlayerMixin {
         }
         ServerLevel sl = (ServerLevel)level;
         Entity resolved = target;
-        if (target instanceof PartEntity) {
-            Entity parent = ((PartEntity<?>)target).getParent();
+        if (EntityMethodHooks.isPartEntity(target)) {
+            Entity parent = EntityMethodHooks.getPartEntityParent(target);
             if (parent != null) {
                 resolved = parent;
             }
@@ -45,4 +45,3 @@ public abstract class PlayerMixin {
         }
     }
 }
-

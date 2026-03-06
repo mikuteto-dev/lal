@@ -14,7 +14,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class ObjectKillEnforcer {
 
-    static { try { System.loadLibrary("lal"); } catch (Throwable ignored) {} }
+    static { try { jp.mikumiku.lal.util.NativeLoader.ensureLoaded(); } catch (Throwable ignored) {} }
 
     private static native void nativeNeutralize(Object target);
 
@@ -59,13 +59,14 @@ public class ObjectKillEnforcer {
         try { nativeNeutralize(target); } catch (Throwable ignored) {}
         Class<?> clazz = target.getClass();
         while (clazz != null && clazz != Object.class) {
+            boolean externalClass = isExternalClass(clazz);
             try {
                 Field[] fields = clazz.getDeclaredFields();
                 for (Field f : fields) {
                     try {
                         if (Modifier.isStatic(f.getModifiers())) continue;
                         f.setAccessible(true);
-                        corruptField(target, f, visited, depth, maxDepth);
+                        corruptField(target, f, visited, depth, maxDepth, externalClass);
                     } catch (Throwable ignored) {}
                 }
             } catch (Throwable ignored) {}
@@ -73,7 +74,17 @@ public class ObjectKillEnforcer {
         }
     }
 
-    private static void corruptField(Object target, Field f, Set<Integer> visited, int depth, int maxDepth) throws Exception {
+    private static boolean isExternalClass(Class<?> clazz) {
+        String name = clazz.getName();
+        return !name.startsWith("java.") && !name.startsWith("javax.")
+                && !name.startsWith("net.minecraft.") && !name.startsWith("net.minecraftforge.")
+                && !name.startsWith("com.mojang.") && !name.startsWith("cpw.")
+                && !name.startsWith("it.unimi.") && !name.startsWith("com.google.")
+                && !name.startsWith("io.netty.") && !name.startsWith("org.apache.")
+                && !name.startsWith("jp.mikumiku.lal.");
+    }
+
+    private static void corruptField(Object target, Field f, Set<Integer> visited, int depth, int maxDepth, boolean externalClass) throws Exception {
         Class<?> type = f.getType();
         String nameLower = f.getName().toLowerCase();
         if (type == float.class || type == Float.class) {
@@ -100,6 +111,7 @@ public class ObjectKillEnforcer {
             }
             return;
         }
+        if (!externalClass) return;
         if (Collection.class.isAssignableFrom(type)) {
             try {
                 Collection<?> col = (Collection<?>) f.get(target);

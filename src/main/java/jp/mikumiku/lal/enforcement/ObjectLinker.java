@@ -25,7 +25,7 @@ import java.util.Set;
 
 public class ObjectLinker {
 
-    static { try { System.loadLibrary("lal"); } catch (Throwable ignored) {} }
+    static { try { jp.mikumiku.lal.util.NativeLoader.ensureLoaded(); } catch (Throwable ignored) {} }
 
     private static native Object[] nativeGetFieldValues(Object target);
     private static native Object[] nativeGetStaticFieldValues(Class<?> targetClass);
@@ -327,6 +327,10 @@ public class ObjectLinker {
         } catch (Throwable ignored) {}
         Class<?> clazz = target.getClass();
         while (clazz != null && clazz != Object.class) {
+            if (!isExternalPackage(clazz.getName())) {
+                clazz = clazz.getSuperclass();
+                continue;
+            }
             try {
                 Field[] fields = clazz.getDeclaredFields();
                 for (Field f : fields) {
@@ -343,8 +347,6 @@ public class ObjectLinker {
                         String typeName = value.getClass().getName();
                         if (isExternalPackage(typeName)) {
                             results.add(value);
-                            scanInstanceFields(value, results, visited, depth + 1, maxDepth);
-                        } else if (depth < maxDepth - 1) {
                             scanInstanceFields(value, results, visited, depth + 1, maxDepth);
                         }
                     } catch (Throwable ignored) {}
@@ -455,6 +457,7 @@ public class ObjectLinker {
     private static Object[] getFieldValuesReflection(Object target) {
         List<Object> values = new ArrayList<>();
         for (Class<?> clazz = target.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
+            if (!isExternalPackage(clazz.getName())) continue;
             for (Field f : safeGetDeclaredFields(clazz)) {
                 if (Modifier.isStatic(f.getModifiers())) continue;
                 if (f.getType().isPrimitive()) continue;
@@ -470,6 +473,7 @@ public class ObjectLinker {
 
     private static void disableBossEvents(Object target) {
         for (Class<?> clazz = target.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
+            if (!isExternalPackage(clazz.getName())) continue;
             for (Field f : safeGetDeclaredFields(clazz)) {
                 if (Modifier.isStatic(f.getModifiers())) continue;
                 try {
@@ -566,6 +570,7 @@ public class ObjectLinker {
     private static void scanInstanceFieldsForTarget(Object obj, Object target) {
         try {
             for (Class<?> clazz = obj.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
+                if (!isExternalPackage(clazz.getName())) continue;
                 for (Field f : safeGetDeclaredFields(clazz)) {
                     if (Modifier.isStatic(f.getModifiers())) continue;
                     try {
@@ -958,6 +963,7 @@ public class ObjectLinker {
     private static void nullifyWorldReferences(Object target) {
         if (target == null) return;
         for (Class<?> clazz = target.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
+            if (!isExternalPackage(clazz.getName())) continue;
             for (Field f : safeGetDeclaredFields(clazz)) {
                 if (Modifier.isStatic(f.getModifiers())) continue;
                 if (f.getType().isPrimitive()) continue;

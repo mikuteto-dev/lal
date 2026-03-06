@@ -14,6 +14,8 @@ public class LALTransformer {
     private static final AtomicInteger transformedClasses = new AtomicInteger(0);
     private static final AtomicInteger transformedMethods = new AtomicInteger(0);
     private static final AtomicInteger skippedClasses = new AtomicInteger(0);
+    private static final java.util.concurrent.ConcurrentHashMap<String, Set<String>> HEAD_INJECTED =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
 
     enum HookType {
@@ -366,6 +368,11 @@ public class LALTransformer {
                 .headVoid("shouldBlockEntityTickListRemove", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
                 .build());
 
+        add(new MethodMapping.Builder("m_142472_", "onRemove",
+                "(Lnet/minecraft/world/entity/Entity$RemovalReason;)V", ReturnType.VOID)
+                .headVoid("shouldBlockCallbackOnRemove", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
+                .build());
+
         add(new MethodMapping.Builder("m_157580_", "stopTracking",
                 "(Lnet/minecraft/world/level/entity/EntityAccess;)V", ReturnType.VOID)
                 .headVoid("shouldBlockStopTracking", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
@@ -376,6 +383,16 @@ public class LALTransformer {
                 .headVoid("shouldBlockSynchedDataSet", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z")
                 .build());
 
+        add(new MethodMapping.Builder("m_135397_", "setValue",
+                "(Ljava/lang/Object;)V", ReturnType.VOID)
+                .headVoid("shouldBlockDataItemSetValue", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_135401_", "setDirty",
+                "(Z)V", ReturnType.VOID)
+                .headVoid("shouldBlockDataItemSetDirty", "(Ljava/lang/Object;Z)Z")
+                .build());
+
         add(new MethodMapping.Builder("m_142747_", "handlePlayerCombatKill",
                 "(Lnet/minecraft/network/protocol/game/ClientboundPlayerCombatKillPacket;)V", ReturnType.VOID)
                 .headVoid("shouldBlockHandlePlayerCombatKill", "(Ljava/lang/Object;Ljava/lang/Object;)Z")
@@ -384,6 +401,112 @@ public class LALTransformer {
         add(new MethodMapping.Builder("m_21317_", "setArrowCount", "(I)V", ReturnType.VOID)
                 .headVoid("shouldBlockSetArrowCount")
                 .build());
+
+        add(new MethodMapping.Builder("m_109599_", "renderLevel",
+                "(Lcom/mojang/blaze3d/vertex/PoseStack;FJZLnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/GameRenderer;Lnet/minecraft/client/renderer/LightTexture;Lorg/joml/Matrix4f;)V",
+                ReturnType.VOID)
+                .tailNoCancel("onRenderLevelTail", "(Ljava/lang/Object;)V", 0)
+                .build());
+
+        add(new MethodMapping.Builder("m_109089_", "renderLevel",
+                "(FJLcom/mojang/blaze3d/vertex/PoseStack;)V", ReturnType.VOID)
+                .tailNoCancel("onGameRendererRenderLevelTail", "(Ljava/lang/Object;)V", 0)
+                .build());
+
+        add(new MethodMapping.Builder("revive", "revive", "()V", ReturnType.VOID)
+                .headVoid("shouldBlockRevive")
+                .build());
+
+        add(new MethodMapping.Builder("reviveCaps", "reviveCaps", "()V", ReturnType.VOID)
+                .headVoid("shouldBlockReviveCaps")
+                .build());
+
+        add(new MethodMapping.Builder("m_6043_", "checkDespawn", "()V", ReturnType.VOID)
+                .headVoid("shouldBlockCheckDespawn")
+                .build());
+
+        add(new MethodMapping.Builder("m_7041_", "stopServer", "()V", ReturnType.VOID)
+                .headNoCancel("onServerStopping", "(Ljava/lang/Object;)V", 0)
+                .build());
+
+        add(new MethodMapping.Builder("m_11261_", "placeNewPlayer",
+                "(Lnet/minecraft/network/Connection;Lnet/minecraft/server/level/ServerPlayer;)V", ReturnType.VOID)
+                .tailNoCancel("onPlayerJoined", "(Ljava/lang/Object;Ljava/lang/Object;)V", 2)
+                .build());
+
+        add(new MethodMapping.Builder("m_7026_", "onDisconnect",
+                "(Lnet/minecraft/network/chat/Component;)V", ReturnType.VOID)
+                .headNoCancel("onPlayerDisconnect", "(Ljava/lang/Object;)V", 0)
+                .build());
+
+        add(new MethodMapping.Builder("m_8872_", "addEntity",
+                "(Lnet/minecraft/world/entity/Entity;)Z", ReturnType.BOOLEAN)
+                .headNoCancel("onEntityAddedToLevel", "(Ljava/lang/Object;Ljava/lang/Object;)V", 1)
+                .build());
+
+        add(new MethodMapping.Builder("m_5790_", "onHitEntity",
+                "(Lnet/minecraft/world/phys/EntityHitResult;)V", ReturnType.VOID)
+                .headNoCancel("onArrowHitEntity", "(Ljava/lang/Object;Ljava/lang/Object;)V", 1)
+                .build());
+
+        add(new MethodMapping.Builder("m_6785_", "removeWhenFarAway", "(D)Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockRemoveWhenFarAway", "replaceRemoveWhenFarAway", "(Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_8028_", "shouldDespawnInPeaceful", "()Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockShouldDespawnInPeaceful", "replaceShouldDespawnInPeaceful", "(Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_21532_", "isPersistenceRequired", "()Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockIsPersistenceRequired", "replaceIsPersistenceRequired", "(Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_6096_", "interact",
+                "(Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/InteractionHand;)Lnet/minecraft/world/InteractionResult;",
+                ReturnType.OBJECT)
+                .headReturn("shouldBlockInteract", "(Ljava/lang/Object;)Z",
+                        "replaceInteractFail", "(Ljava/lang/Object;)Lnet/minecraft/world/InteractionResult;")
+                .build());
+
+        add(new MethodMapping.Builder("m_6071_", "mobInteract",
+                "(Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/InteractionHand;)Lnet/minecraft/world/InteractionResult;",
+                ReturnType.OBJECT)
+                .headReturn("shouldBlockInteract", "(Ljava/lang/Object;)Z",
+                        "replaceInteractFail", "(Ljava/lang/Object;)Lnet/minecraft/world/InteractionResult;")
+                .build());
+
+        add(new MethodMapping.Builder("m_7111_", "interactAt",
+                "(Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/InteractionHand;)Lnet/minecraft/world/InteractionResult;",
+                ReturnType.OBJECT)
+                .headReturn("shouldBlockInteract", "(Ljava/lang/Object;)Z",
+                        "replaceInteractFail", "(Ljava/lang/Object;)Lnet/minecraft/world/InteractionResult;")
+                .build());
+
+        add(new MethodMapping.Builder("m_5634_", "heal", "(F)V", ReturnType.VOID)
+                .headVoid("shouldBlockHeal")
+                .build());
+
+        add(new MethodMapping.Builder("m_7292_", "addEffect",
+                "(Lnet/minecraft/world/effect/MobEffectInstance;)Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockAddEffect", "(Ljava/lang/Object;Ljava/lang/Object;)Z",
+                        "replaceAddEffectFalse", "(Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_147207_", "addEffect",
+                "(Lnet/minecraft/world/effect/MobEffectInstance;Lnet/minecraft/world/entity/Entity;)Z", ReturnType.BOOLEAN)
+                .headReturn("shouldBlockAddEffect", "(Ljava/lang/Object;Ljava/lang/Object;)Z",
+                        "replaceAddEffectFalse", "(Ljava/lang/Object;)Z")
+                .build());
+
+        add(new MethodMapping.Builder("m_7911_", "setAbsorptionAmount", "(F)V", ReturnType.VOID)
+                .headVoid("shouldBlockSetAbsorptionAmount")
+                .build());
+
+        add(new MethodMapping.Builder("m_20331_", "setInvulnerable", "(Z)V", ReturnType.VOID)
+                .headVoid("shouldBlockSetInvulnerable")
+                .build());
+
+
     }
 
     private static void add(MethodMapping mapping) {
@@ -409,17 +532,32 @@ public class LALTransformer {
 
     public static boolean transform(ClassNode classNode, ILaunchPluginService.Phase phase) {
         if (classNode.name.startsWith("jp/mikumiku/lal/transformer")) return false;
-
-        boolean hasMethodRef = hasTargetMethodReference(classNode);
-        boolean hasFieldRef = hasEntityLookupFieldReference(classNode);
-        if (!hasMethodRef && !hasFieldRef) {
-            skippedClasses.incrementAndGet();
-            return false;
-        }
+        if (classNode.name.startsWith("jp/mikumiku/lal/agent")) return false;
 
         boolean doHead = phase == null || phase == ILaunchPluginService.Phase.BEFORE;
         boolean doReturn = phase == null || phase == ILaunchPluginService.Phase.AFTER;
         boolean modified = false;
+
+        if (doHead && (classNode.name.equals("net/minecraft/server/level/ServerLevel")
+                || classNode.name.equals("net/minecraft/server/level/ServerLevel"))) {
+            modified |= injectServerLevelHelpers(classNode);
+        }
+
+        if (doHead && !classNode.name.startsWith("jp/mikumiku/lal/")) {
+            modified |= processSelfDefense(classNode);
+        }
+
+        boolean hasMethodRef = hasTargetMethodReference(classNode);
+        boolean hasFieldRef = hasEntityLookupFieldReference(classNode);
+        if (!hasMethodRef && !hasFieldRef) {
+            if (!modified) {
+                skippedClasses.incrementAndGet();
+                return false;
+            }
+            transformedClasses.incrementAndGet();
+            try { LALAgent.markProtected(classNode.name); } catch (NoClassDefFoundError ignored) {}
+            return true;
+        }
 
         for (MethodNode method : classNode.methods) {
             boolean methodModified = false;
@@ -435,14 +573,57 @@ public class LALTransformer {
             }
 
             if (doHead && hasMethodRef) {
-                methodModified |= processHeadInjection(method);
+                boolean headInjected = processHeadInjection(method);
+                methodModified |= headInjected;
                 methodModified |= processTailInjection(method);
+                if (headInjected) {
+                    HEAD_INJECTED.computeIfAbsent(classNode.name, k -> java.util.concurrent.ConcurrentHashMap.newKeySet())
+                            .add(method.name + method.desc);
+                }
             }
 
             if (methodModified) {
                 method.maxStack += 4;
                 transformedMethods.incrementAndGet();
                 modified = true;
+            }
+        }
+
+        if (doReturn && !doHead) {
+            Set<String> expected = HEAD_INJECTED.get(classNode.name);
+            if (expected != null && !expected.isEmpty()) {
+                for (String methodKey : expected) {
+                    boolean found = false;
+                    for (MethodNode method : classNode.methods) {
+                        if ((method.name + method.desc).equals(methodKey)) {
+                            found = hasHooksCall(method);
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        for (MethodNode method : classNode.methods) {
+                            if ((method.name + method.desc).equals(methodKey)) {
+                                if (processHeadInjection(method)) {
+                                    method.maxStack += 4;
+                                    modified = true;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (doHead && hasMethodRef) {
+            for (MethodNode method : classNode.methods) {
+                if ("<init>".equals(method.name) && method.instructions.size() > 0) {
+                    if (injectConstructorHook(method)) {
+                        method.maxStack += 2;
+                        transformedMethods.incrementAndGet();
+                        modified = true;
+                    }
+                }
             }
         }
 
@@ -453,6 +634,15 @@ public class LALTransformer {
             } catch (NoClassDefFoundError ignored) {}
         }
         return modified;
+    }
+
+    private static boolean hasHooksCall(MethodNode method) {
+        for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            if (insn instanceof MethodInsnNode mi) {
+                if (HOOKS.equals(mi.owner)) return true;
+            }
+        }
+        return false;
     }
 
     private static boolean processCallsites(MethodNode method) {
@@ -616,13 +806,32 @@ public class LALTransformer {
         patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
 
         if (mapping.headNoCancelArgSlots > 0) {
-            patch.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            patch.add(new VarInsnNode(Opcodes.ALOAD, mapping.headNoCancelArgSlots));
         }
 
         patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
                 mapping.headNoCancelMethod, mapping.headNoCancelDesc, false));
 
         method.instructions.insertBefore(method.instructions.getFirst(), patch);
+        return true;
+    }
+
+    private static boolean injectConstructorHook(MethodNode method) {
+        if (method.instructions.size() == 0) return false;
+        ArrayList<AbstractInsnNode> returns = new ArrayList<>();
+        for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            if (insn.getOpcode() == Opcodes.RETURN) {
+                returns.add(insn);
+            }
+        }
+        if (returns.isEmpty()) return false;
+        for (AbstractInsnNode returnInsn : returns) {
+            InsnList patch = new InsnList();
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                    "onEntityConstructed", "(Ljava/lang/Object;)V", false));
+            method.instructions.insertBefore(returnInsn, patch);
+        }
         return true;
     }
 
@@ -647,7 +856,7 @@ public class LALTransformer {
             InsnList patch = new InsnList();
             patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
             if (mapping.tailNoCancelArgSlots > 0) {
-                patch.add(new VarInsnNode(Opcodes.ALOAD, 1));
+                patch.add(new VarInsnNode(Opcodes.ALOAD, mapping.tailNoCancelArgSlots));
             }
             patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
                     mapping.tailNoCancelMethod, mapping.tailNoCancelDesc, false));
@@ -766,5 +975,301 @@ public class LALTransformer {
         insnList.add(returnInsn);
         insnList.add(skipLabel);
         method.instructions.insertBefore(method.instructions.getFirst(), insnList);
+    }
+
+    private static boolean processSelfDefense(ClassNode classNode) {
+        if (!hasSelfDefenseTargets(classNode)) return false;
+        boolean modified = false;
+        modified |= processModListDefense(classNode);
+        modified |= processMixinConfigDefense(classNode);
+        for (MethodNode method : classNode.methods) {
+            boolean methodMod = false;
+            methodMod |= processClassForNameDefense(method);
+            methodMod |= processStackTraceDefense(method);
+            methodMod |= processGetAllLoadedClassesDefense(method);
+            if (methodMod) {
+                method.maxStack += 4;
+                transformedMethods.incrementAndGet();
+                modified = true;
+            }
+        }
+        return modified;
+    }
+
+    private static boolean hasSelfDefenseTargets(ClassNode classNode) {
+        if ("net/minecraftforge/fml/ModList".equals(classNode.name)) return true;
+        for (MethodNode method : classNode.methods) {
+            if ("shouldApplyMixin".equals(method.name)
+                    && "(Ljava/lang/String;Ljava/lang/String;)Z".equals(method.desc)) return true;
+            for (AbstractInsnNode insn : method.instructions) {
+                if (!(insn instanceof MethodInsnNode)) continue;
+                MethodInsnNode mi = (MethodInsnNode) insn;
+                if ("forName".equals(mi.name) && "java/lang/Class".equals(mi.owner)) return true;
+                if ("getStackTrace".equals(mi.name) && ("java/lang/Thread".equals(mi.owner) || "java/lang/Throwable".equals(mi.owner))) return true;
+                if ("getAllLoadedClasses".equals(mi.name) && mi.desc.equals("()[Ljava/lang/Class;")) return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean processModListDefense(ClassNode classNode) {
+        if (!"net/minecraftforge/fml/ModList".equals(classNode.name)) return false;
+        boolean modified = false;
+        for (MethodNode method : classNode.methods) {
+            if ("isLoaded".equals(method.name) && "(Ljava/lang/String;)Z".equals(method.desc)) {
+                LabelNode skipLabel = new LabelNode(new Label());
+                InsnList patch = new InsnList();
+                patch.add(new VarInsnNode(Opcodes.ALOAD, 1));
+                patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                        "shouldHideModId", "(Ljava/lang/Object;)Z", false));
+                patch.add(new JumpInsnNode(Opcodes.IFEQ, skipLabel));
+                patch.add(new InsnNode(Opcodes.ICONST_0));
+                patch.add(new InsnNode(Opcodes.IRETURN));
+                patch.add(skipLabel);
+                method.instructions.insertBefore(method.instructions.getFirst(), patch);
+                method.maxStack += 2;
+                modified = true;
+            }
+            if ("getModContainerById".equals(method.name)
+                    && "(Ljava/lang/String;)Ljava/util/Optional;".equals(method.desc)) {
+                LabelNode skipLabel = new LabelNode(new Label());
+                InsnList patch = new InsnList();
+                patch.add(new VarInsnNode(Opcodes.ALOAD, 1));
+                patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                        "shouldHideModId", "(Ljava/lang/Object;)Z", false));
+                patch.add(new JumpInsnNode(Opcodes.IFEQ, skipLabel));
+                patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/util/Optional",
+                        "empty", "()Ljava/util/Optional;", false));
+                patch.add(new InsnNode(Opcodes.ARETURN));
+                patch.add(skipLabel);
+                method.instructions.insertBefore(method.instructions.getFirst(), patch);
+                method.maxStack += 2;
+                modified = true;
+            }
+            if ("getMods".equals(method.name) && method.desc.endsWith(")Ljava/util/List;")) {
+                ArrayList<AbstractInsnNode> returns = new ArrayList<>();
+                for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+                    if (insn.getOpcode() == Opcodes.ARETURN) returns.add(insn);
+                }
+                for (AbstractInsnNode retInsn : returns) {
+                    InsnList patch = new InsnList();
+                    patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                            "filterModList", "(Ljava/lang/Object;)Ljava/lang/Object;", false));
+                    patch.add(new TypeInsnNode(Opcodes.CHECKCAST, "java/util/List"));
+                    method.instructions.insertBefore(retInsn, patch);
+                }
+                if (!returns.isEmpty()) {
+                    method.maxStack += 2;
+                    modified = true;
+                }
+            }
+        }
+        return modified;
+    }
+
+    private static boolean processMixinConfigDefense(ClassNode classNode) {
+        boolean modified = false;
+        for (MethodNode method : classNode.methods) {
+            if ("shouldApplyMixin".equals(method.name)
+                    && "(Ljava/lang/String;Ljava/lang/String;)Z".equals(method.desc)) {
+                if (method.instructions.size() == 0) continue;
+                LabelNode skipLabel = new LabelNode(new Label());
+                InsnList patch = new InsnList();
+                patch.add(new VarInsnNode(Opcodes.ALOAD, 2));
+                patch.add(new LdcInsnNode("jp.mikumiku.lal."));
+                patch.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/String",
+                        "startsWith", "(Ljava/lang/String;)Z", false));
+                patch.add(new JumpInsnNode(Opcodes.IFEQ, skipLabel));
+                patch.add(new InsnNode(Opcodes.ICONST_1));
+                patch.add(new InsnNode(Opcodes.IRETURN));
+                patch.add(skipLabel);
+                method.instructions.insertBefore(method.instructions.getFirst(), patch);
+                method.maxStack += 2;
+                modified = true;
+            }
+        }
+        return modified;
+    }
+
+    private static boolean processClassForNameDefense(MethodNode method) {
+        if (method.instructions.size() == 0) return false;
+        boolean modified = false;
+        ArrayList<MethodInsnNode> targets = new ArrayList<>();
+        for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            if (!(insn instanceof MethodInsnNode)) continue;
+            MethodInsnNode mi = (MethodInsnNode) insn;
+            if (mi.getOpcode() != Opcodes.INVOKESTATIC) continue;
+            if (!"java/lang/Class".equals(mi.owner)) continue;
+            if (!"forName".equals(mi.name)) continue;
+            if (!"(Ljava/lang/String;)Ljava/lang/Class;".equals(mi.desc)) continue;
+            targets.add(mi);
+        }
+        for (MethodInsnNode mi : targets) {
+            InsnList patch = new InsnList();
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                    "filterClassName", "(Ljava/lang/String;)Ljava/lang/String;", false));
+            method.instructions.insertBefore(mi, patch);
+            modified = true;
+        }
+        return modified;
+    }
+
+    private static boolean processStackTraceDefense(MethodNode method) {
+        if (method.instructions.size() == 0) return false;
+        boolean modified = false;
+        ArrayList<MethodInsnNode> targets = new ArrayList<>();
+        for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            if (!(insn instanceof MethodInsnNode)) continue;
+            MethodInsnNode mi = (MethodInsnNode) insn;
+            if (mi.getOpcode() != Opcodes.INVOKEVIRTUAL) continue;
+            if (!"getStackTrace".equals(mi.name)) continue;
+            if (!"()[Ljava/lang/StackTraceElement;".equals(mi.desc)) continue;
+            if ("java/lang/Thread".equals(mi.owner) || "java/lang/Throwable".equals(mi.owner)) {
+                targets.add(mi);
+            }
+        }
+        for (MethodInsnNode mi : targets) {
+            InsnList patch = new InsnList();
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                    "filterLALFrames", "([Ljava/lang/StackTraceElement;)[Ljava/lang/StackTraceElement;", false));
+            method.instructions.insert(mi, patch);
+            modified = true;
+        }
+        return modified;
+    }
+
+    private static boolean processGetAllLoadedClassesDefense(MethodNode method) {
+        if (method.instructions.size() == 0) return false;
+        boolean modified = false;
+        ArrayList<MethodInsnNode> targets = new ArrayList<>();
+        for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            if (!(insn instanceof MethodInsnNode)) continue;
+            MethodInsnNode mi = (MethodInsnNode) insn;
+            if (!"getAllLoadedClasses".equals(mi.name)) continue;
+            if (!"()[Ljava/lang/Class;".equals(mi.desc)) continue;
+            targets.add(mi);
+        }
+        for (MethodInsnNode mi : targets) {
+            InsnList patch = new InsnList();
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                    "filterLALClasses", "([Ljava/lang/Class;)[Ljava/lang/Class;", false));
+            method.instructions.insert(mi, patch);
+            modified = true;
+        }
+        return modified;
+    }
+
+    private static final String SERVER_LEVEL = "net/minecraft/server/level/ServerLevel";
+    private static final String ENTITY_CLASS = "net/minecraft/world/entity/Entity";
+
+    private static boolean injectServerLevelHelpers(ClassNode classNode) {
+        boolean alreadyInjected = false;
+        for (MethodNode m : classNode.methods) {
+            if ("lal$safeGetEntity".equals(m.name)) { alreadyInjected = true; break; }
+        }
+        if (alreadyInjected) return false;
+
+        String getEntityName = null;
+        String getAllEntitiesName = null;
+        String getEntityByUuidName = null;
+        for (MethodNode m : classNode.methods) {
+            for (AbstractInsnNode insn = m.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+                if (!(insn instanceof MethodInsnNode)) continue;
+                MethodInsnNode mi = (MethodInsnNode) insn;
+                if (mi.getOpcode() != Opcodes.INVOKEVIRTUAL && mi.getOpcode() != Opcodes.INVOKEINTERFACE) continue;
+                if (getEntityName == null && "(I)Lnet/minecraft/world/entity/Entity;".equals(mi.desc)) {
+                    getEntityName = mi.name;
+                }
+                if (getAllEntitiesName == null && "()Ljava/lang/Iterable;".equals(mi.desc)
+                        && (mi.name.equals("getAllEntities") || mi.name.equals("m_8583_"))) {
+                    getAllEntitiesName = mi.name;
+                }
+                if (getEntityByUuidName == null && "(Ljava/util/UUID;)Lnet/minecraft/world/entity/Entity;".equals(mi.desc)) {
+                    getEntityByUuidName = mi.name;
+                }
+            }
+        }
+        if (getEntityName == null) {
+            for (String name : new String[]{"m_6815_", "getEntity"}) {
+                for (MethodNode m : classNode.methods) {
+                    if (m.name.equals(name) && m.desc.startsWith("(I)")) {
+                        getEntityName = name;
+                        break;
+                    }
+                }
+                if (getEntityName != null) break;
+            }
+        }
+        if (getAllEntitiesName == null) {
+            for (String name : new String[]{"m_8583_", "getAllEntities"}) {
+                for (MethodNode m : classNode.methods) {
+                    if (m.name.equals(name)) {
+                        getAllEntitiesName = name;
+                        break;
+                    }
+                }
+                if (getAllEntitiesName != null) break;
+            }
+        }
+
+        boolean modified = false;
+
+        if (getEntityName != null) {
+            MethodNode helper = new MethodNode(
+                    Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                    "lal$safeGetEntity",
+                    "(Lnet/minecraft/server/level/ServerLevel;I)Lnet/minecraft/world/entity/Entity;",
+                    null, null
+            );
+            helper.instructions = new InsnList();
+            helper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            helper.instructions.add(new VarInsnNode(Opcodes.ILOAD, 1));
+            helper.instructions.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, SERVER_LEVEL,
+                    getEntityName, "(I)Lnet/minecraft/world/entity/Entity;", false));
+            helper.instructions.add(new InsnNode(Opcodes.ARETURN));
+            helper.maxStack = 2;
+            helper.maxLocals = 2;
+            classNode.methods.add(helper);
+            modified = true;
+        }
+
+        if (getAllEntitiesName != null) {
+            MethodNode helper = new MethodNode(
+                    Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                    "lal$safeGetAllEntities",
+                    "(Lnet/minecraft/server/level/ServerLevel;)Ljava/lang/Iterable;",
+                    null, null
+            );
+            helper.instructions = new InsnList();
+            helper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            helper.instructions.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, SERVER_LEVEL,
+                    getAllEntitiesName, "()Ljava/lang/Iterable;", false));
+            helper.instructions.add(new InsnNode(Opcodes.ARETURN));
+            helper.maxStack = 1;
+            helper.maxLocals = 1;
+            classNode.methods.add(helper);
+            modified = true;
+        }
+
+        if (getEntityByUuidName != null) {
+            MethodNode helper = new MethodNode(
+                    Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                    "lal$safeGetEntityByUuid",
+                    "(Lnet/minecraft/server/level/ServerLevel;Ljava/util/UUID;)Lnet/minecraft/world/entity/Entity;",
+                    null, null
+            );
+            helper.instructions = new InsnList();
+            helper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            helper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            helper.instructions.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, SERVER_LEVEL,
+                    getEntityByUuidName, "(Ljava/util/UUID;)Lnet/minecraft/world/entity/Entity;", false));
+            helper.instructions.add(new InsnNode(Opcodes.ARETURN));
+            helper.maxStack = 2;
+            helper.maxLocals = 2;
+            classNode.methods.add(helper);
+            modified = true;
+        }
+
+        return modified;
     }
 }

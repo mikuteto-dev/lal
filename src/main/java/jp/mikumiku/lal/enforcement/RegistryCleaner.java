@@ -24,8 +24,8 @@ import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.entity.EntityInLevelCallback;
 import net.minecraft.world.level.entity.EntityTickList;
 import net.minecraft.world.level.gameevent.DynamicGameEventListener;
-import net.minecraftforge.entity.PartEntity;
 import net.minecraftforge.event.level.LevelEvent;
+import jp.mikumiku.lal.transformer.EntityMethodHooks;
 import jp.mikumiku.lal.util.FieldAccessUtil;
 public class RegistryCleaner {
     private static final Map<String, String[]> SRG_NAMES;
@@ -183,11 +183,11 @@ public class RegistryCleaner {
         }
         if (target.isMultipartEntity()) {
             try {
-                PartEntity[] parts = target.getParts();
+                Entity[] parts = EntityMethodHooks.getEntityParts(target);
                 if (parts != null) {
-                    for (PartEntity part : parts) {
+                    for (Entity part : parts) {
                         try {
-                            level.dragonParts.remove(part.getId());
+                            if (part != null) level.dragonParts.remove(part.getId());
                         }
                         catch (Throwable throwable) {
                                     }
@@ -514,9 +514,9 @@ public class RegistryCleaner {
         m.put("entityTickList", new String[]{"entityTickList", "f_143243_"});
         m.put("active", new String[]{"active", "f_156903_"});
         m.put("passive", new String[]{"passive", "f_156904_"});
-        m.put("storage", new String[]{"storage", "f_188348_"});
+        m.put("storage", new String[]{"storage", "f_156827_"});
         m.put("byClass", new String[]{"byClass", "f_13527_"});
-        m.put("allInstances", new String[]{"allInstances", "f_13525_"});
+        m.put("allInstances", new String[]{"allInstances", "f_13529_"});
         m.put("byUuid", new String[]{"byUuid", "f_156808_"});
         m.put("byId", new String[]{"byId", "f_156807_"});
         SRG_NAMES = Map.copyOf(m);

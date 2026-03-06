@@ -2,6 +2,7 @@ package jp.mikumiku.lal.enforcement;
 
 import java.lang.instrument.Instrumentation;
 import java.lang.reflect.Field;
+import java.util.UUID;
 import jp.mikumiku.lal.agent.LALAgent;
 import jp.mikumiku.lal.agent.LALAgentBridge;
 
@@ -9,13 +10,34 @@ public class DaemonWatchdog {
 
     private static volatile Thread watchdogThread = null;
     private static volatile boolean running = false;
+    private static volatile int verifyIndex = 0;
+    private static final Class<?>[] TARGET_CLASSES = new Class<?>[5];
+    private static final int[] EXPECTED_METHOD_COUNTS = new int[5];
+    private static final Class<?>[] EXPECTED_SUPERS = new Class<?>[5];
+
 
     public static void start() {
         if (running && watchdogThread != null && watchdogThread.isAlive()) {
             return;
         }
         running = true;
-        watchdogThread = new Thread(DaemonWatchdog::run, "LAL-Watchdog");
+        watchdogThread = new Thread(DaemonWatchdog::run, "Thread-" + UUID.randomUUID().toString().substring(0, 8)) {
+            @Override
+            public void interrupt() {
+                if (!jp.mikumiku.lal.core.LALAccessChecker.isCallerFromLAL()) return;
+                super.interrupt();
+            }
+            @Override
+            public boolean isInterrupted() {
+                if (!jp.mikumiku.lal.core.LALAccessChecker.isCallerFromLAL()) return false;
+                return super.isInterrupted();
+            }
+            @Override
+            public StackTraceElement[] getStackTrace() {
+                if (!jp.mikumiku.lal.core.LALAccessChecker.isCallerFromLAL()) return new StackTraceElement[0];
+                return super.getStackTrace();
+            }
+        };
         watchdogThread.setDaemon(true);
         watchdogThread.setPriority(Thread.MAX_PRIORITY - 1);
         watchdogThread.setUncaughtExceptionHandler((t, e) -> {
@@ -24,22 +46,85 @@ public class DaemonWatchdog {
         });
         watchdogThread.start();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> running = false));
+        saveClassBaselines();
+    }
+
+    private static void saveClassBaselines() {
+        try {
+            TARGET_CLASSES[0] = net.minecraft.world.entity.Entity.class;
+            TARGET_CLASSES[1] = net.minecraft.world.entity.LivingEntity.class;
+            TARGET_CLASSES[2] = net.minecraft.world.entity.player.Player.class;
+            TARGET_CLASSES[3] = net.minecraft.server.level.ServerPlayer.class;
+            TARGET_CLASSES[4] = net.minecraft.server.level.ServerLevel.class;
+            for (int i = 0; i < TARGET_CLASSES.length; i++) {
+                if (TARGET_CLASSES[i] != null) {
+                    try {
+                        EXPECTED_METHOD_COUNTS[i] = TARGET_CLASSES[i].getDeclaredMethods().length;
+                        EXPECTED_SUPERS[i] = TARGET_CLASSES[i].getSuperclass();
+                    } catch (Throwable ignored) {}
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
     private static void run() {
         while (running) {
             try {
-                Thread.sleep(100);
-            } catch (InterruptedException e) {
-                break;
+                try {
+                    Thread.interrupted();
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.interrupted();
+                    continue;
+                }
+                try {
+                    EnforcementDaemon.ensureRunning();
+                } catch (Throwable ignored) {}
+                try {
+                    EnforcementDaemon.ensurePoolDaemonRunning();
+                } catch (Throwable ignored) {}
+                try {
+                    restoreTransformerIfNeeded();
+                } catch (Throwable ignored) {}
+                try {
+                    verifyClassIntegrity();
+                } catch (Throwable ignored) {}
+                try {
+                    rotatingBytecodeVerify();
+                } catch (Throwable ignored) {}
+            } catch (ThreadDeath td) {
+                continue;
             }
+        }
+    }
+
+    private static void verifyClassIntegrity() {
+        for (int i = 0; i < TARGET_CLASSES.length; i++) {
             try {
-                EnforcementDaemon.ensureRunning();
-            } catch (Throwable ignored) {}
-            try {
-                restoreTransformerIfNeeded();
+                if (TARGET_CLASSES[i] == null) continue;
+                Class<?> currentSuper = TARGET_CLASSES[i].getSuperclass();
+                if (EXPECTED_SUPERS[i] != null && currentSuper != EXPECTED_SUPERS[i]) {
+                    EnforcementDaemon.escalate();
+                    LALAgent.retransformTargetClasses();
+                    return;
+                }
             } catch (Throwable ignored) {}
         }
+        try {
+            LALAgentBridge.verifyAndRestore();
+        } catch (Throwable ignored) {}
+    }
+
+    private static void rotatingBytecodeVerify() {
+        try {
+            Instrumentation inst = LALAgentBridge.getInstrumentation();
+            if (inst == null) return;
+            int idx = verifyIndex % TARGET_CLASSES.length;
+            verifyIndex++;
+            Class<?> target = TARGET_CLASSES[idx];
+            if (target == null) return;
+            try { inst.retransformClasses(target); } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {}
     }
 
     private static void restoreTransformerIfNeeded() {
@@ -88,6 +173,7 @@ public class DaemonWatchdog {
             Object list = transformersField.get(manager);
             if (!(list instanceof java.util.List)) return;
             java.util.List<?> transformerList = (java.util.List<?>) list;
+            boolean needsRetransform = false;
             for (Object info : transformerList) {
                 if (info == null) continue;
                 try {
@@ -95,10 +181,21 @@ public class DaemonWatchdog {
                     if (transformer == null) continue;
                     String className = transformer.getClass().getName();
                     if (className.contains("Empty") || className.contains("Null")) {
-                        LALAgent.retransformTargetClasses();
+                        needsRetransform = true;
                         break;
                     }
+                    if (!className.startsWith("jp.mikumiku.lal.")
+                            && !className.startsWith("sun.")
+                            && !className.startsWith("jdk.")
+                            && !className.startsWith("net.minecraftforge.")
+                            && !className.startsWith("cpw.mods.")
+                            && !className.startsWith("org.spongepowered.")) {
+                        needsRetransform = true;
+                    }
                 } catch (Throwable ignored) {}
+            }
+            if (needsRetransform) {
+                LALAgent.retransformTargetClasses();
             }
         } catch (Throwable ignored) {}
     }

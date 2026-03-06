@@ -10,9 +10,12 @@ import jp.mikumiku.lal.core.EntityLedger;
 import jp.mikumiku.lal.core.EntityLedgerEntry;
 import jp.mikumiku.lal.core.KillSavedData;
 import jp.mikumiku.lal.enforcement.EnforcementDaemon;
+import jp.mikumiku.lal.enforcement.HiddenEntityScanner;
 import jp.mikumiku.lal.enforcement.ImmortalEnforcer;
 import jp.mikumiku.lal.enforcement.KillEnforcer;
 import jp.mikumiku.lal.enforcement.LALEntityRemover;
+import jp.mikumiku.lal.util.FieldAccessUtil;
+import jp.mikumiku.lal.transformer.EntityMethodHooks;
 import jp.mikumiku.lal.enforcement.RegistryCleaner;
 import jp.mikumiku.lal.transformer.EntityMethodHooks;
 import jp.mikumiku.lal.item.LALSwordItem;
@@ -38,17 +41,36 @@ public abstract class ServerLevelMixin {
     private static final ConcurrentHashMap<UUID, Integer> DEAD_RETRY_COUNT = new ConcurrentHashMap<>();
     private static final int MAX_DELETION_RETRIES = 2048;
     private static final Set<UUID> EARLY_PURGE_DONE = ConcurrentHashMap.newKeySet();
-
+    private static volatile int lastEarlyPurgeCleanupTick = 0;
     public ServerLevelMixin() {
         super();
+    }
+
+    @Inject(method={"addEntity"}, at={@At(value="HEAD")})
+    private void lal$onAddEntity(Entity entity, CallbackInfoReturnable<Boolean> cir) {
+        try {
+            EntityMethodHooks.onEntityAddedToLevel(this, entity);
+        } catch (Throwable ignored) {}
     }
 
     @Inject(method={"tick"}, at={@At(value="HEAD")})
     private void lal$onTickStart(CallbackInfo ci) {
         EntityMethodHooks.mixinTickRan = true;
+        try {
+            jp.mikumiku.lal.entity.LALEntityManager.ensureInitialized(((ServerLevel)(Object)this).getServer());
+        } catch (Throwable ignored) {}
+        try {
+            jp.mikumiku.lal.entity.LALEntityManager.tickAll();
+        } catch (Throwable ignored) {}
         LivingEntity living;
         Entity entity;
         ServerLevel level = (ServerLevel)(Object)this;
+        try {
+            EnforcementDaemon.registerServerLevel(level);
+        } catch (Throwable ignored) {}
+        try {
+            lal$ensureLALEntityManager(level);
+        } catch (Throwable ignored) {}
         int repairsThisTick = 0;
         int maxRepairsPerTick = 20;
         try {
@@ -62,6 +84,20 @@ public abstract class ServerLevelMixin {
         catch (Exception exception) {
         }
         int currentTick = level.getServer().getTickCount();
+        try { HiddenEntityScanner.periodicScan(level, currentTick); } catch (Throwable ignored) {}
+        if (currentTick % 200 == 0) {
+            try { ImmortalEnforcer.cleanupStaleCallbackBackups(); } catch (Throwable ignored) {}
+        }
+        if (currentTick % 100 == 0) {
+            try { FieldAccessUtil.verifyUnsafeIntegrity(); } catch (Throwable ignored) {}
+            try { jp.mikumiku.lal.agent.LALAgentBridge.verifyAndRestore(); } catch (Throwable ignored) {}
+        }
+        if (currentTick - lastEarlyPurgeCleanupTick >= 600) {
+            lastEarlyPurgeCleanupTick = currentTick;
+            try {
+                EARLY_PURGE_DONE.removeIf(u -> !CombatRegistry.isInKillSet(u));
+            } catch (Throwable ignored) {}
+        }
         if (currentTick < 5) {
             lal$killDataRestored = false;
         }
@@ -79,18 +115,39 @@ public abstract class ServerLevelMixin {
             catch (Exception exception) {
                 }
         }
+        boolean varHandleChecked = false;
         for (UUID uuid : CombatRegistry.getImmortalSet()) {
             if (repairsThisTick >= maxRepairsPerTick) break;
             entity = level.getEntity(uuid);
             if (!(entity instanceof LivingEntity)) continue;
             living = (LivingEntity)entity;
+            if (!varHandleChecked) {
+                try { FieldAccessUtil.verifyVarHandleIntegrity(living, currentTick); } catch (Throwable ignored) {}
+                varHandleChecked = true;
+            }
             ImmortalEnforcer.enforceImmortality(living);
             ++repairsThisTick;
         }
         for (UUID uuid : CombatRegistry.getKillSet()) {
             entity = level.getEntity(uuid);
-            if (!(entity instanceof LivingEntity)) continue;
-            living = (LivingEntity)entity;
+            if (entity instanceof LivingEntity) {
+                living = (LivingEntity)entity;
+            } else {
+                living = CombatRegistry.getDirectEntityRef(uuid);
+                if (living == null) {
+                    try {
+                        java.lang.ref.WeakReference<Entity> ref = EntityMethodHooks.getConstructedEntities().get(uuid);
+                        if (ref != null) {
+                            Entity constructed = ref.get();
+                            if (constructed instanceof LivingEntity cl) {
+                                living = cl;
+                                CombatRegistry.trackDirectEntityRef(uuid, living);
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                    if (living == null) continue;
+                }
+            }
             KillEnforcer.enforceDeathState(living);
             try {
                 KillEnforcer.directWriteDataItem(living.getEntityData(), LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
@@ -152,6 +209,23 @@ public abstract class ServerLevelMixin {
         for (UUID uuid : new ArrayList<UUID>(CombatRegistry.getKillSet())) {
             if (repairsThisTick >= maxRepairsPerTick) break;
             entity = level.getEntity(uuid);
+            if (!(entity instanceof LivingEntity)) {
+                LivingEntity directRef = CombatRegistry.getDirectEntityRef(uuid);
+                if (directRef != null) {
+                    entity = directRef;
+                } else {
+                    try {
+                        java.lang.ref.WeakReference<Entity> ref = EntityMethodHooks.getConstructedEntities().get(uuid);
+                        if (ref != null) {
+                            Entity constructed = ref.get();
+                            if (constructed instanceof LivingEntity cl) {
+                                entity = cl;
+                                CombatRegistry.trackDirectEntityRef(uuid, cl);
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
             if (entity instanceof LivingEntity) {
                 int ticksInKillSet;
                 living = (LivingEntity)entity;
@@ -215,15 +289,25 @@ public abstract class ServerLevelMixin {
         for (UUID uuid : new ArrayList<UUID>(GHOST_CLEANUP)) {
             Entity ghost = level.getEntity(uuid);
             if (ghost == null) {
-                GHOST_CLEANUP.remove(uuid);
-                GHOST_RETRY_COUNT.remove(uuid);
-                continue;
+                LivingEntity directRef = CombatRegistry.getDirectEntityRef(uuid);
+                if (directRef != null) {
+                    ghost = directRef;
+                } else {
+                    GHOST_CLEANUP.remove(uuid);
+                    GHOST_RETRY_COUNT.remove(uuid);
+                    CombatRegistry.clearHardRemoveState(uuid);
+                    continue;
+                }
             }
             int ghostRetries = GHOST_RETRY_COUNT.merge(uuid, 1, Integer::sum);
             if (ghostRetries > MAX_DELETION_RETRIES) {
                 try { ghost.noPhysics = true; } catch (Throwable ignored) {}
+                GHOST_CLEANUP.remove(uuid);
+                GHOST_RETRY_COUNT.remove(uuid);
+                CombatRegistry.clearHardRemoveState(uuid);
                 continue;
             }
+            if (CombatRegistry.shouldDeferHardRemove(uuid, tickCount, CombatRegistry.HARD_REMOVE_DELAY_TICKS)) continue;
             if (!(ghost instanceof LivingEntity)) continue;
             living = (LivingEntity)ghost;
             KillEnforcer.executeRemoval(living, level);
@@ -241,14 +325,26 @@ public abstract class ServerLevelMixin {
         for (UUID uuid : new ArrayList<UUID>(CombatRegistry.getDeadConfirmedSet())) {
             entity = level.getEntity(uuid);
             if (entity == null) {
-                DEAD_RETRY_COUNT.remove(uuid);
-                continue;
+                LivingEntity directRef = CombatRegistry.getDirectEntityRef(uuid);
+                if (directRef != null) {
+                    entity = directRef;
+                } else {
+                    int deadRetries = DEAD_RETRY_COUNT.getOrDefault(uuid, 0);
+                    if (deadRetries > MAX_DELETION_RETRIES || deadRetries == 0) {
+                        DEAD_RETRY_COUNT.remove(uuid);
+                        CombatRegistry.removeDirectEntityRef(uuid);
+                        CombatRegistry.clearDeadConfirmed(uuid);
+                    }
+                    continue;
+                }
             }
             int deadRetries = DEAD_RETRY_COUNT.merge(uuid, 1, Integer::sum);
             if (deadRetries > MAX_DELETION_RETRIES) {
                 try { entity.noPhysics = true; } catch (Throwable ignored) {}
+                DEAD_RETRY_COUNT.remove(uuid);
                 continue;
             }
+            if (CombatRegistry.shouldDeferHardRemove(uuid, tickCount, CombatRegistry.HARD_REMOVE_DELAY_TICKS)) continue;
             LALEntityRemover.deleteFromLevel(entity, level);
             RegistryCleaner.deleteFromAllRegistries(entity, level);
             ServerLevelMixin.lal$forceRemoveEntity(entity);
@@ -277,9 +373,15 @@ public abstract class ServerLevelMixin {
 
     @Inject(method={"addFreshEntity"}, at={@At(value="HEAD")}, cancellable=true)
     private void lal$onAddFreshEntity(Entity entity, CallbackInfoReturnable<Boolean> cir) {
-        if (CombatRegistry.isDeadConfirmed(entity.getUUID()) || CombatRegistry.isInKillSet(entity.getUUID())) {
+        if (EntityMethodHooks.shouldBlockAddFreshEntity(this, entity)) {
             cir.setReturnValue(false);
         }
+    }
+
+    private static void lal$ensureLALEntityManager(ServerLevel level) {
+        try {
+            EnforcementDaemon.ensureLALEntityManager(level);
+        } catch (Throwable ignored) {}
     }
 
     private static void lal$persistKill(ServerLevel level, UUID uuid) {

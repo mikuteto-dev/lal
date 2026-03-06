@@ -4,6 +4,7 @@ import java.util.UUID;
 import jp.mikumiku.lal.core.CombatRegistry;
 import jp.mikumiku.lal.item.LALSwordItem;
 import jp.mikumiku.lal.transformer.EntityMethodHooks;
+import jp.mikumiku.lal.util.MixinUtil;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.world.entity.Entity;
@@ -21,6 +22,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class SynchedEntityDataMixin {
     @Shadow @Final private Entity entity;
 
+    @Inject(method = "define", at = @At("TAIL"))
+    private <T> void lal$registerDataItemOwnerOnDefine(EntityDataAccessor<T> key, T defaultValue, CallbackInfo ci) {
+        try {
+            EntityMethodHooks.registerAllDataItemOwners(this, this.entity);
+        } catch (Throwable ignored) {}
+    }
+
     @Inject(method = "set(Lnet/minecraft/network/syncher/EntityDataAccessor;Ljava/lang/Object;)V",
             at = @At("HEAD"), cancellable = true)
     private <T> void lal$protectEntityData(EntityDataAccessor<T> key, T value, CallbackInfo ci) {
@@ -36,9 +44,10 @@ public abstract class SynchedEntityDataMixin {
     private <T> boolean lal$shouldBlock(EntityDataAccessor<T> key, T value) {
         try {
             if (this.entity == null) return false;
-            if (this.entity.level() == null) return false;
+            try { if (this.entity.level() == null) return false; } catch (Throwable t) { return false; }
             if (EntityMethodHooks.isBypass()) return false;
             UUID uuid = this.entity.getUUID();
+            if (uuid == null) return false;
             if (value instanceof Float f && this.entity instanceof LivingEntity) {
                 try {
                     if (key.getId() != LivingEntity.DATA_HEALTH_ID.getId()) return false;
@@ -47,14 +56,12 @@ public abstract class SynchedEntityDataMixin {
                 }
                 if (CombatRegistry.isInImmortalSet(uuid)) {
                     LivingEntity living = (LivingEntity) this.entity;
-                    float max = living.getMaxHealth();
-                    if (max <= 0.0f) max = 20.0f;
+                    float max = MixinUtil.safeMaxHealth(living);
                     if (f < max) return true;
                 }
                 if (this.entity instanceof Player player) {
                     if (!CombatRegistry.isInKillSet(uuid) && LALSwordItem.hasLALEquipment(player)) {
-                        float max = ((LivingEntity) this.entity).getMaxHealth();
-                        if (max <= 0.0f) max = 20.0f;
+                        float max = MixinUtil.safeMaxHealth((LivingEntity) this.entity);
                         if (f < max) return true;
                     }
                 }

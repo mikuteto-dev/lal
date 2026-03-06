@@ -20,6 +20,7 @@ import java.security.ProtectionDomain;
 import java.util.AbstractList;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Enumeration;
@@ -107,6 +108,8 @@ public class KillEnforcer {
     private static MethodHandle ENTITY_DISCARD;
     private static Field ENTITY_DATA_ITEMS_BY_ID;
     private static final IEventBus CAPTURED_EVENT_BUS;
+    private static final ConcurrentHashMap<String, Set<Class<?>>> MOD_CLASS_CACHE = new ConcurrentHashMap<>();
+    private static final Set<String> FAILED_CLASS_NAMES = ConcurrentHashMap.newKeySet();
 
     public KillEnforcer() {
         super();
@@ -133,7 +136,7 @@ public class KillEnforcer {
                 }
             }
             String name = f.getName().toLowerCase();
-            if (fieldType == Float.TYPE && (name.contains("health") || name.equals("f_20958_"))) {
+            if (fieldType == Float.TYPE && (name.contains("health") || name.equals("f_20769_"))) {
                 try {
                     f.setAccessible(true);
                     return f;
@@ -141,7 +144,7 @@ public class KillEnforcer {
                 catch (Throwable throwable) {
                 }
             }
-            if (fieldType == Integer.TYPE && (name.contains("deathtime") || name.contains("death") || name.equals("f_20962_"))) {
+            if (fieldType == Integer.TYPE && (name.contains("deathtime") || name.contains("death") || name.equals("f_20919_"))) {
                 try {
                     f.setAccessible(true);
                     return f;
@@ -149,7 +152,7 @@ public class KillEnforcer {
                 catch (Throwable throwable) {
                 }
             }
-            if (fieldType != Boolean.TYPE || !name.contains("dead") && !name.equals("f_20960_")) continue;
+            if (fieldType != Boolean.TYPE || !name.contains("dead") && !name.equals("f_20890_")) continue;
             try {
                 f.setAccessible(true);
                 return f;
@@ -185,7 +188,11 @@ public class KillEnforcer {
             catch (Throwable throwable) {
             }
         }
-        return target.getHealth();
+        try {
+            return target.getHealth();
+        } catch (Throwable t) {
+            return 0.0f;
+        }
     }
 
     private static void setDeathTime(LivingEntity target, int value) {
@@ -227,7 +234,11 @@ public class KillEnforcer {
             catch (Throwable throwable) {
             }
         }
-        return target.isDeadOrDying();
+        try {
+            return target.isDeadOrDying();
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private static void setRemovalReason(Entity target, Entity.RemovalReason value) {
@@ -255,7 +266,11 @@ public class KillEnforcer {
             catch (Throwable throwable) {
             }
         }
-        return target.getRemovalReason();
+        try {
+            return target.getRemovalReason();
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     private static boolean hasHealthAccess() {
@@ -316,7 +331,7 @@ public class KillEnforcer {
             }
         } catch (Throwable ignored) {}
         try {
-            for (String dirtyName : new String[]{"isDirty", "f_135344_"}) {
+            for (String dirtyName : new String[]{"isDirty", "f_135348_"}) {
                 try {
                     Field dirtyField = SynchedEntityData.class.getDeclaredField(dirtyName);
                     dirtyField.setAccessible(true);
@@ -372,17 +387,26 @@ public class KillEnforcer {
     }
 
     public static void forceKill(LivingEntity target, ServerLevel level, @Nullable Entity attacker) {
+        try {
+            if (target.getEntityData() == null) return;
+        } catch (Throwable ignored) { return; }
         DamageSource source;
         UUID uuid;
         block48: {
-            uuid = target.getUUID();
+            uuid = jp.mikumiku.lal.util.FieldAccessUtil.getEntityUuidDirect(target);
+            if (uuid == null) uuid = target.getUUID();
             if (CombatRegistry.isDeadConfirmed(uuid)) {
                 return;
             }
+            try { EntityMethodHooks.recordKillSignature(target); } catch (Throwable ignored) {}
             KillEnforcer.setRemovalReason((Entity)target, null);
             int tick = level.getServer().getTickCount();
-            UUID attackerUuid = attacker != null ? attacker.getUUID() : null;
+            UUID attackerUuid = attacker != null ? jp.mikumiku.lal.util.FieldAccessUtil.getEntityUuidDirect(attacker) : null;
+            if (attackerUuid == null && attacker != null) attackerUuid = attacker.getUUID();
             CombatRegistry.addToKillSet(uuid, attackerUuid, tick);
+            int entityId = jp.mikumiku.lal.util.FieldAccessUtil.getEntityIdDirect(target);
+            if (entityId <= 0) entityId = target.getId();
+            EntityMethodHooks.addToStrongTracked(uuid, (Entity)target);
             KillEnforcer.neutralizeProtectionFlags(target);
             target.setInvulnerable(false);
             target.invulnerableTime = 0;
@@ -474,6 +498,7 @@ public class KillEnforcer {
                     try { jp.mikumiku.lal.network.LALNetwork.broadcastRemoveEntity(level, target.getId()); } catch (Throwable ignored2) {}
 
                     CombatRegistry.confirmDead(uuid);
+                    EntityMethodHooks.removeFromStrongTracked(uuid);
                     try { ObjectLinker.scanAndRegister(target); } catch (Throwable ignored2) {}
                     return;
                 }
@@ -549,6 +574,12 @@ public class KillEnforcer {
         KillEnforcer.setRemovalReason((Entity)target, null);
         KillEnforcer.corruptAllHealthFields(target);
         KillEnforcer.corruptSynchedEntityData(target);
+        KillEnforcer.resetModBooleanFields(target);
+        KillEnforcer.corruptSynchedEntityDataByValueMatch(target);
+        KillEnforcer.corruptHealthViaNBT(target);
+        KillEnforcer.invokeAllSetHealthMethods(target, 0.0f);
+        KillEnforcer.corruptMapStoredHealth(target);
+        KillEnforcer.scanGlobalHealthStorage(target);
         KillEnforcer.setLastHurtByPlayer(target, attacker);
         boolean isFirstKill = !CombatRegistry.hasDroppedLoot(uuid);
         DamageSource damageSource = source = attacker != null ? LALDamageSources.lalAttack(level, attacker) : LALDamageSources.lalAttack(level);
@@ -609,6 +640,9 @@ public class KillEnforcer {
             }
         }
         try {
+            target.getBrain().clearMemories();
+        } catch (Throwable ignored) {}
+        try {
             target.noPhysics = true;
         }
         catch (Throwable mob) {
@@ -620,6 +654,11 @@ public class KillEnforcer {
 
         try {
             KillEnforcer.directWriteDataItem(target.getEntityData(), LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
+        } catch (Throwable ignored) {}
+        try {
+            if (target.level() instanceof ServerLevel sl) {
+                target.updateDynamicGameEventListener(net.minecraft.world.level.gameevent.DynamicGameEventListener::remove);
+            }
         } catch (Throwable ignored) {}
         Level level2 = target.level();
         if (level2 instanceof ServerLevel) {
@@ -638,13 +677,117 @@ public class KillEnforcer {
             KillEnforcer.exileToVoid((Entity)target, sl2);
             KillEnforcer.invokeRemoveMethods((Entity)target);
             KillEnforcer.forceSetRemoved((Entity)target);
-            try { jp.mikumiku.lal.network.LALNetwork.broadcastRemoveEntity(sl2, target.getId()); } catch (Throwable ignored) {}
+            int removeId = jp.mikumiku.lal.util.FieldAccessUtil.getEntityIdDirect(target);
+            if (removeId <= 0) removeId = target.getId();
+            try { jp.mikumiku.lal.network.LALNetwork.broadcastRemoveEntity(sl2, removeId); } catch (Throwable ignored) {}
         }
 
         KillEnforcer.restoreEventBus();
+    }
 
+    public static void forceKillRawEntity(Entity target, ServerLevel level, @Nullable Entity attacker) {
+        if (target instanceof LivingEntity living) {
+            forceKill(living, level, attacker);
+            return;
+        }
+        if (target instanceof Player) return;
         try {
-            ObjectLinker.scanAndRegister(target);
+            UUID uuid = jp.mikumiku.lal.util.FieldAccessUtil.getEntityUuidDirect(target);
+            if (uuid == null) uuid = target.getUUID();
+            if (CombatRegistry.isDeadConfirmed(uuid)) return;
+            if (CombatRegistry.isInImmortalSet(uuid)) return;
+            int tick = level.getServer().getTickCount();
+            UUID attackerUuid = attacker != null ? jp.mikumiku.lal.util.FieldAccessUtil.getEntityUuidDirect(attacker) : null;
+            if (attackerUuid == null && attacker != null) attackerUuid = attacker.getUUID();
+            CombatRegistry.addToKillSet(uuid, attackerUuid, tick);
+            int entityId = jp.mikumiku.lal.util.FieldAccessUtil.getEntityIdDirect(target);
+            if (entityId <= 0) entityId = target.getId();
+            EntityMethodHooks.addToStrongTracked(uuid, target);
+            for (Class<?> clazz = target.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
+                if (clazz.getName().startsWith("java.")) break;
+                for (java.lang.reflect.Field f : jp.mikumiku.lal.util.FieldAccessUtil.safeGetDeclaredFields(clazz)) {
+                    if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                    try {
+                        f.setAccessible(true);
+                        String name = f.getName().toLowerCase();
+                        if (f.getType() == float.class) {
+                            if (name.contains("health") || name.contains("hp") || name.equals("h")
+                                    || name.contains("currenthealth") || name.contains("curhp")) {
+                                f.setFloat(target, 0.0f);
+                                jp.mikumiku.lal.util.FieldAccessUtil.unsafePutFloat(target, f, 0.0f);
+                            }
+                            if (name.contains("absorb") || name.contains("shield")) {
+                                f.setFloat(target, 0.0f);
+                            }
+                        } else if (f.getType() == boolean.class) {
+                            if (name.contains("dead") || name.contains("isdead")
+                                    || name.contains("shoulddead") || name.contains("killed")
+                                    || name.contains("removed")) {
+                                f.setBoolean(target, true);
+                                jp.mikumiku.lal.util.FieldAccessUtil.unsafePutBoolean(target, f, true);
+                            }
+                            if (name.contains("alive") || name.contains("isalive")
+                                    || name.contains("invulnerable") || name.contains("invincible")) {
+                                f.setBoolean(target, false);
+                                jp.mikumiku.lal.util.FieldAccessUtil.unsafePutBoolean(target, f, false);
+                            }
+                        } else if (f.getType() == int.class) {
+                            if (name.contains("deathtime") || name.contains("deathtick")
+                                    || name.contains("deathcount")) {
+                                f.setInt(target, 20);
+                            }
+                            if (name.contains("invulnerable") || name.contains("nodamage")
+                                    || name.contains("immune")) {
+                                f.setInt(target, 0);
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
+            target.setInvulnerable(false);
+            target.invulnerableTime = 0;
+            target.setNoGravity(false);
+            try { target.setSilent(true); } catch (Throwable ignored) {}
+            EntityMethodHooks.setBypass(true);
+            try {
+                target.kill();
+            } catch (Throwable ignored) {}
+            try {
+                target.setRemoved(Entity.RemovalReason.KILLED);
+            } catch (Throwable ignored) {}
+            EntityMethodHooks.setBypass(false);
+            if (!target.isRemoved()) {
+                try {
+                    jp.mikumiku.lal.util.FieldAccessUtil.REMOVAL_REASON.set(target, Entity.RemovalReason.KILLED);
+                } catch (Throwable ignored) {
+                    try {
+                        for (String fname : new String[]{"f_146795_", "removalReason"}) {
+                            try {
+                                java.lang.reflect.Field f = Entity.class.getDeclaredField(fname);
+                                f.setAccessible(true);
+                                f.set(target, Entity.RemovalReason.KILLED);
+                                break;
+                            } catch (Throwable ignored2) {}
+                        }
+                    } catch (Throwable ignored2) {}
+                }
+            }
+            KillEnforcer.cleanupBossEvents(target);
+            try {
+                LALEntityRemover.deleteFromLevel(target, level);
+            } catch (Throwable ignored) {}
+            try {
+                RegistryCleaner.deleteFromAllRegistries(target, level);
+            } catch (Throwable ignored) {}
+            KillEnforcer.silentServerRemove(target, level);
+            KillEnforcer.exileToVoid(target, level);
+            KillEnforcer.invokeRemoveMethods(target);
+            KillEnforcer.forceSetRemoved(target);
+            int removeId2 = jp.mikumiku.lal.util.FieldAccessUtil.getEntityIdDirect(target);
+            if (removeId2 <= 0) removeId2 = target.getId();
+            try { jp.mikumiku.lal.network.LALNetwork.broadcastRemoveEntity(level, removeId2); } catch (Throwable ignored) {}
+            CombatRegistry.confirmDead(uuid);
+            EntityMethodHooks.removeFromStrongTracked(uuid);
         } catch (Throwable ignored) {}
     }
 
@@ -892,6 +1035,143 @@ public class KillEnforcer {
         }
     }
 
+    private static void resetModBooleanFields(Entity entity) {
+        try {
+            for (Class<?> clazz = entity.getClass(); clazz != null && clazz != Entity.class; clazz = clazz.getSuperclass()) {
+                for (Field f : KillEnforcer.safeGetDeclaredFields(clazz)) {
+                    if (Modifier.isStatic(f.getModifiers())) continue;
+                    if (f.getType() != Boolean.TYPE) continue;
+                    if (f.getName().startsWith("f_")) continue;
+                    try {
+                        f.setAccessible(true);
+                        f.setBoolean(entity, false);
+                    } catch (Throwable ignored) {}
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void corruptSynchedEntityDataByValueMatch(LivingEntity target) {
+        if (ENTITY_DATA_ITEMS_BY_ID == null) return;
+        try {
+            float currentHealth = KillEnforcer.getHealth(target);
+            if (currentHealth <= 0.0f) return;
+            Object itemsById = ENTITY_DATA_ITEMS_BY_ID.get(target.getEntityData());
+            if (itemsById == null) return;
+            Iterable<?> values = null;
+            if (itemsById.getClass().isArray()) {
+                values = java.util.Arrays.asList((Object[]) itemsById);
+            } else {
+                try {
+                    Method valuesMethod = itemsById.getClass().getMethod("values");
+                    Object result = valuesMethod.invoke(itemsById);
+                    if (result instanceof Iterable) values = (Iterable<?>) result;
+                } catch (Throwable ignored) {}
+            }
+            if (values == null) return;
+            for (Object item : values) {
+                if (item == null) continue;
+                try {
+                    Field valueField = null;
+                    for (Field f : KillEnforcer.safeGetDeclaredFields(item.getClass())) {
+                        if (f.getName().equals("value") || f.getName().equals("f_135349_")) {
+                            f.setAccessible(true);
+                            valueField = f;
+                            break;
+                        }
+                    }
+                    if (valueField == null) {
+                        for (Field f : KillEnforcer.safeGetDeclaredFields(item.getClass())) {
+                            if (f.getType() == Object.class && !Modifier.isStatic(f.getModifiers())) {
+                                f.setAccessible(true);
+                                valueField = f;
+                                break;
+                            }
+                        }
+                    }
+                    if (valueField == null) continue;
+                    Object val = valueField.get(item);
+                    if (val instanceof Float fVal) {
+                        if (Math.abs(fVal - currentHealth) < 0.5f && fVal > 0.0f) {
+                            valueField.set(item, 0.0f);
+                        }
+                    } else if (val instanceof Double dVal) {
+                        if (Math.abs(dVal - currentHealth) < 0.5 && dVal > 0.0) {
+                            valueField.set(item, 0.0);
+                        }
+                    } else if (val instanceof Integer iVal) {
+                        if (Math.abs(iVal - currentHealth) < 1.0f && iVal > 0) {
+                            valueField.set(item, 0);
+                        }
+                    }
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void corruptHealthViaNBT(LivingEntity target) {
+        try {
+            CompoundTag tag = new CompoundTag();
+            EntityMethodHooks.setBypass(true);
+            try {
+                Method saveMethod = null;
+                for (String name : new String[]{"m_7380_", "addAdditionalSaveData"}) {
+                    try {
+                        saveMethod = LivingEntity.class.getDeclaredMethod(name, CompoundTag.class);
+                        saveMethod.setAccessible(true);
+                        break;
+                    } catch (NoSuchMethodException ignored) {}
+                }
+                if (saveMethod == null) {
+                    for (String name : new String[]{"m_7380_", "addAdditionalSaveData"}) {
+                        try {
+                            saveMethod = Entity.class.getDeclaredMethod(name, CompoundTag.class);
+                            saveMethod.setAccessible(true);
+                            break;
+                        } catch (NoSuchMethodException ignored) {}
+                    }
+                }
+                if (saveMethod != null) {
+                    saveMethod.invoke(target, tag);
+                }
+            } finally {
+                EntityMethodHooks.setBypass(false);
+            }
+            tag.putFloat("Health", 0.0f);
+            if (tag.contains("AbsorptionAmount")) {
+                tag.putFloat("AbsorptionAmount", 0.0f);
+            }
+            if (tag.contains("DeathTime")) {
+                tag.putShort("DeathTime", (short) 20);
+            }
+            EntityMethodHooks.setBypass(true);
+            try {
+                Method loadMethod = null;
+                for (String name : new String[]{"m_7378_", "readAdditionalSaveData"}) {
+                    try {
+                        loadMethod = LivingEntity.class.getDeclaredMethod(name, CompoundTag.class);
+                        loadMethod.setAccessible(true);
+                        break;
+                    } catch (NoSuchMethodException ignored) {}
+                }
+                if (loadMethod == null) {
+                    for (String name : new String[]{"m_7378_", "readAdditionalSaveData"}) {
+                        try {
+                            loadMethod = Entity.class.getDeclaredMethod(name, CompoundTag.class);
+                            loadMethod.setAccessible(true);
+                            break;
+                        } catch (NoSuchMethodException ignored) {}
+                    }
+                }
+                if (loadMethod != null) {
+                    loadMethod.invoke(target, tag);
+                }
+            } finally {
+                EntityMethodHooks.setBypass(false);
+            }
+        } catch (Throwable ignored) {}
+    }
+
     private static void persistDeathState(LivingEntity target) {
         try {
             CompoundTag forgeData = target.getPersistentData();
@@ -909,7 +1189,7 @@ public class KillEnforcer {
         Player player = (Player)attacker;
         try {
             Field f2;
-            for (String name : new String[]{"lastHurtByPlayer", "f_20956_"}) {
+            for (String name : new String[]{"lastHurtByPlayer", "f_20888_"}) {
                 try {
                     f2 = LivingEntity.class.getDeclaredField(name);
                     f2.setAccessible(true);
@@ -919,7 +1199,7 @@ public class KillEnforcer {
                 catch (NoSuchFieldException ignored) {
                 }
             }
-            for (String name : new String[]{"lastHurtByPlayerTime", "f_20957_"}) {
+            for (String name : new String[]{"lastHurtByPlayerTime", "f_20889_"}) {
                 try {
                     f2 = LivingEntity.class.getDeclaredField(name);
                     f2.setAccessible(true);
@@ -1073,7 +1353,13 @@ public class KillEnforcer {
             catch (Throwable throwable) {
             }
         }
-        target.setInvulnerable(false);
+        EntityMethodHooks.setBypass(true);
+        try {
+            target.setInvulnerable(false);
+            target.setAbsorptionAmount(0.0f);
+            target.setNoGravity(true);
+            target.setSilent(true);
+        } finally { EntityMethodHooks.setBypass(false); }
         target.invulnerableTime = 0;
         if (target instanceof Mob) {
             Mob mob = (Mob)target;
@@ -1095,8 +1381,17 @@ public class KillEnforcer {
             catch (Throwable throwable) {
             }
         }
-        KillEnforcer.corruptAllHealthFields(target);
-        KillEnforcer.corruptSynchedEntityData(target);
+        int dt = KillEnforcer.getDeathTime(target);
+        if (dt <= 1 || dt % 10 == 0) {
+            KillEnforcer.corruptAllHealthFields(target);
+            KillEnforcer.corruptSynchedEntityData(target);
+            KillEnforcer.resetModBooleanFields(target);
+            KillEnforcer.corruptSynchedEntityDataByValueMatch(target);
+            KillEnforcer.corruptHealthViaNBT(target);
+            KillEnforcer.invokeAllSetHealthMethods(target, 0.0f);
+            KillEnforcer.corruptMapStoredHealth(target);
+            KillEnforcer.scanGlobalHealthStorage(target);
+        }
     }
 
     public static int getDeathTime(LivingEntity target) {
@@ -1260,6 +1555,24 @@ public class KillEnforcer {
     public static void executeKill(LivingEntity target, ServerLevel level) {
         KillEnforcer.initiateKill(target, level);
         KillEnforcer.executeRemoval(target, level);
+        try {
+            UUID uuid = target.getUUID();
+            if (CombatRegistry.isInImmortalSet(uuid)) return;
+            if (target instanceof ServerPlayer) return;
+            boolean stillPresent = !target.isRemoved();
+            boolean stillAlive = target.isAlive() || target.getHealth() > 0.0f || !verifyKill(target);
+            if (!stillPresent && !stillAlive) return;
+            try { LALEntityRemover.deleteFromLevel(target, level); } catch (Throwable ignored) {}
+            try { RegistryCleaner.deleteFromAllRegistries(target, level); } catch (Throwable ignored) {}
+            try { silentServerRemove(target, level); } catch (Throwable ignored) {}
+            try { exileToVoid(target, level); } catch (Throwable ignored) {}
+            try { invokeRemoveMethods(target); } catch (Throwable ignored) {}
+            try { forceSetRemoved(target); } catch (Throwable ignored) {}
+            try { forceDiscard(target); } catch (Throwable ignored) {}
+            try { sendRemovePacketToAllPlayers(target, level); } catch (Throwable ignored) {}
+            CombatRegistry.confirmDead(uuid);
+            EntityMethodHooks.removeFromStrongTracked(uuid);
+        } catch (Throwable ignored) {}
     }
 
     private static void sendRemovePacketToTrackers(Entity target, ServerLevel level) {
@@ -1305,6 +1618,15 @@ public class KillEnforcer {
         }
         catch (Throwable e) {
         }
+    }
+
+    public static void sendRemovePacketToAllPlayers(Entity target, ServerLevel level) {
+        try {
+            ClientboundRemoveEntitiesPacket pkt = new ClientboundRemoveEntitiesPacket(new int[]{target.getId()});
+            for (ServerPlayer player : level.players()) {
+                try { player.connection.send((Packet) pkt); } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
     }
 
     private static void silentServerRemove(Entity target, ServerLevel level) {
@@ -1527,13 +1849,13 @@ public class KillEnforcer {
                     try {
                         String name = f.getName();
                         f.setAccessible(true);
-                        if (name.equals("xo") || name.equals("f_19802_")
+                        if (name.equals("xo") || name.equals("f_19854_")
                                 || name.equals("xOld") || name.equals("f_19790_")) {
                             f.setDouble(target, 1.0E9);
-                        } else if (name.equals("yo") || name.equals("f_19803_")
+                        } else if (name.equals("yo") || name.equals("f_19855_")
                                 || name.equals("yOld") || name.equals("f_19791_")) {
                             f.setDouble(target, -500.0);
-                        } else if (name.equals("zo") || name.equals("f_19804_")
+                        } else if (name.equals("zo") || name.equals("f_19856_")
                                 || name.equals("zOld") || name.equals("f_19792_")) {
                             f.setDouble(target, 0.0);
                         }
@@ -1580,6 +1902,251 @@ public class KillEnforcer {
                     } catch (Throwable ignored) {}
                 }
             }
+        } catch (Throwable ignored) {}
+    }
+
+    private static final ConcurrentHashMap<Class<?>, Method> TRUE_HEALTH_CACHE = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Class<?>, List<Method>> SET_HEALTH_CACHE = new ConcurrentHashMap<>();
+    private static final Object NO_METHOD_SENTINEL = new Object();
+
+    public static float discoverTrueHealth(LivingEntity target) {
+        try {
+            Class<?> entityClass = target.getClass();
+            Method cached = TRUE_HEALTH_CACHE.get(entityClass);
+            if (cached != null) {
+                try {
+                    Object result = cached.invoke(target);
+                    if (result instanceof Float) return (Float) result;
+                    if (result instanceof Double) return ((Double) result).floatValue();
+                } catch (Throwable ignored) {}
+                return Float.NaN;
+            }
+            for (Class<?> clazz = entityClass; clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
+                for (Method m : clazz.getDeclaredMethods()) {
+                    if (Modifier.isStatic(m.getModifiers())) continue;
+                    if (m.getParameterCount() != 0) continue;
+                    Class<?> ret = m.getReturnType();
+                    if (ret != Float.TYPE && ret != Double.TYPE && ret != Float.class && ret != Double.class) continue;
+                    String name = m.getName().toLowerCase();
+                    if (!name.contains("get") && !name.contains("obtain") && !name.contains("read")) continue;
+                    boolean isHealth = name.contains("health") || name.contains("hp") || name.contains("hitpoint");
+                    if (!isHealth) continue;
+                    if (name.equalsIgnoreCase("gethealth") || name.equalsIgnoreCase("getmaxhealth")
+                            || name.equals("m_21223_") || name.equals("m_21233_")) continue;
+                    if (name.contains("max")) continue;
+                    try {
+                        m.setAccessible(true);
+                        Object result = m.invoke(target);
+                        if (result instanceof Number) {
+                            TRUE_HEALTH_CACHE.put(entityClass, m);
+                            return ((Number) result).floatValue();
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
+        } catch (Throwable ignored) {}
+        return Float.NaN;
+    }
+
+    private static void invokeAllSetHealthMethods(LivingEntity target, float value) {
+        try {
+            Class<?> entityClass = target.getClass();
+            List<Method> cached = SET_HEALTH_CACHE.get(entityClass);
+            if (cached != null) {
+                for (Method m : cached) {
+                    try {
+                        EntityMethodHooks.setBypass(true);
+                        if (m.getParameterTypes()[0] == Float.TYPE || m.getParameterTypes()[0] == Float.class) {
+                            m.invoke(target, value);
+                        } else if (m.getParameterTypes()[0] == Double.TYPE || m.getParameterTypes()[0] == Double.class) {
+                            m.invoke(target, (double) value);
+                        }
+                    } catch (Throwable ignored) {
+                    } finally {
+                        EntityMethodHooks.setBypass(false);
+                    }
+                }
+                return;
+            }
+            List<Method> found = new ArrayList<>();
+            Set<String> invoked = new HashSet<>();
+            for (Class<?> clazz = entityClass; clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
+                for (Method m : clazz.getDeclaredMethods()) {
+                    if (Modifier.isStatic(m.getModifiers())) continue;
+                    if (m.getParameterCount() != 1) continue;
+                    Class<?> param = m.getParameterTypes()[0];
+                    if (param != Float.TYPE && param != Double.TYPE && param != Float.class && param != Double.class) continue;
+                    String mname = m.getName().toLowerCase();
+                    if (!mname.contains("set") && !mname.contains("update") && !mname.contains("write")) continue;
+                    boolean isHealth = mname.contains("health") || mname.contains("hp") || mname.contains("hitpoint");
+                    if (!isHealth) continue;
+                    if (mname.equalsIgnoreCase("sethealth") || mname.equals("m_21153_")) continue;
+                    if (mname.contains("max")) continue;
+                    String key = clazz.getName() + "#" + m.getName();
+                    if (!invoked.add(key)) continue;
+                    try {
+                        m.setAccessible(true);
+                        found.add(m);
+                        EntityMethodHooks.setBypass(true);
+                        try {
+                            if (param == Float.TYPE || param == Float.class) {
+                                m.invoke(target, value);
+                            } else {
+                                m.invoke(target, (double) value);
+                            }
+                        } finally {
+                            EntityMethodHooks.setBypass(false);
+                        }
+                    } catch (Throwable ignored) {
+                        EntityMethodHooks.setBypass(false);
+                    }
+                }
+            }
+            SET_HEALTH_CACHE.put(entityClass, found);
+        } catch (Throwable ignored) {}
+    }
+
+    private static void corruptMapStoredHealth(LivingEntity target) {
+        try {
+            for (Class<?> clazz = target.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
+                for (Field f : KillEnforcer.safeGetDeclaredFields(clazz)) {
+                    try {
+                        if (Modifier.isStatic(f.getModifiers())) continue;
+                        Class<?> type = f.getType();
+                        if (!Map.class.isAssignableFrom(type)) continue;
+                        f.setAccessible(true);
+                        Object mapObj = f.get(target);
+                        if (mapObj == null) continue;
+                        corruptHealthInMap(mapObj, target);
+                    } catch (Throwable ignored) {}
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void corruptHealthInMap(Object mapObj, LivingEntity target) {
+        try {
+            if (mapObj instanceof Map<?, ?> map) {
+                try {
+                    for (Map.Entry<?, ?> entry : new ArrayList<>(map.entrySet())) {
+                        if (entry.getKey() == target || (entry.getKey() instanceof UUID && entry.getKey().equals(target.getUUID()))) {
+                            if (entry.getValue() instanceof Float) {
+                                try { ((Map) map).put(entry.getKey(), 0.0f); } catch (Throwable ignored) {}
+                            } else if (entry.getValue() instanceof Double) {
+                                try { ((Map) map).put(entry.getKey(), 0.0); } catch (Throwable ignored) {}
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {}
+                corruptMapInternals(mapObj, target);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void corruptMapInternals(Object mapObj, LivingEntity target) {
+        try {
+            Field tableField = null;
+            for (Class<?> c = mapObj.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                try {
+                    tableField = c.getDeclaredField("table");
+                    tableField.setAccessible(true);
+                    break;
+                } catch (Throwable ignored) {}
+            }
+            if (tableField == null) return;
+            Object table = tableField.get(mapObj);
+            if (table == null || !table.getClass().isArray()) return;
+            Object[] buckets = (Object[]) table;
+            for (Object node : buckets) {
+                if (node == null) continue;
+                corruptMapNode(node, target);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void corruptMapNode(Object node, LivingEntity target) {
+        try {
+            Class<?> nodeClass = node.getClass();
+            Field keyField = null;
+            Field valueField = null;
+            Field nextField = null;
+            for (Class<?> c = nodeClass; c != null && c != Object.class; c = c.getSuperclass()) {
+                for (Field f : c.getDeclaredFields()) {
+                    f.setAccessible(true);
+                    String fname = f.getName();
+                    if (fname.equals("key") || fname.equals("referent")) {
+                        if (keyField == null) keyField = f;
+                    }
+                    if (fname.equals("value") || fname.equals("val")) {
+                        if (valueField == null) valueField = f;
+                    }
+                    if (fname.equals("next")) {
+                        if (nextField == null) nextField = f;
+                    }
+                }
+            }
+            if (keyField == null || valueField == null) return;
+            Object key = keyField.get(node);
+            if (key == null && node instanceof java.lang.ref.Reference) {
+                try { key = ((java.lang.ref.Reference<?>) node).get(); } catch (Throwable ignored) {}
+            }
+            boolean matches = false;
+            if (key == target) matches = true;
+            else if (key instanceof UUID && key.equals(target.getUUID())) matches = true;
+            if (matches) {
+                Object val = valueField.get(node);
+                if (val instanceof Float) {
+                    valueField.set(node, Float.MIN_VALUE);
+                } else if (val instanceof Double) {
+                    valueField.set(node, Double.MIN_VALUE);
+                }
+            }
+            if (nextField != null) {
+                Object next = nextField.get(node);
+                if (next != null) corruptMapNode(next, target);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static volatile long lastGlobalScanTime = 0;
+
+    private static void scanGlobalHealthStorage(LivingEntity target) {
+        try {
+            long now = System.currentTimeMillis();
+            if (now - lastGlobalScanTime < 500) return;
+            lastGlobalScanTime = now;
+            Instrumentation inst = LALAgentBridge.getInstrumentation();
+            if (inst == null) return;
+            Class<?>[] allClasses = inst.getAllLoadedClasses();
+            if (allClasses == null) return;
+            for (Class<?> clazz : allClasses) {
+                try {
+                    String cname = clazz.getName();
+                    if (cname.startsWith("java.") || cname.startsWith("sun.") || cname.startsWith("jdk.")
+                            || cname.startsWith("com.sun.") || cname.startsWith("javax.")
+                            || cname.startsWith("net.minecraft.") || cname.startsWith("net.minecraftforge.")
+                            || cname.startsWith("org.spongepowered.") || cname.startsWith("cpw.mods.")
+                            || cname.startsWith("jp.mikumiku.lal.")) continue;
+                    for (Field f : KillEnforcer.safeGetDeclaredFields(clazz)) {
+                        try {
+                            if (!Modifier.isStatic(f.getModifiers())) continue;
+                            Class<?> type = f.getType();
+                            if (!Map.class.isAssignableFrom(type) && !WeakHashMap.class.isAssignableFrom(type)) continue;
+                            f.setAccessible(true);
+                            Object mapObj = f.get(null);
+                            if (mapObj == null) continue;
+                            corruptHealthInMap(mapObj, target);
+                        } catch (Throwable ignored) {}
+                    }
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void detectMethodRewrite(LivingEntity target) {
+        try {
+            jp.mikumiku.lal.agent.LALAgent.retransformTargetClasses();
         } catch (Throwable ignored) {}
     }
 
@@ -1640,6 +2207,24 @@ public class KillEnforcer {
             }
         }
         catch (Throwable throwable) {
+        }
+        try {
+            float trueHealth = discoverTrueHealth(target);
+            if (!Float.isNaN(trueHealth) && trueHealth <= 0.0f) {
+                return true;
+            }
+        } catch (Throwable ignored) {}
+        if (healthZero && isDead) {
+            try {
+                EntityMethodHooks.setBypass(true);
+                boolean aliveResult = target.isAlive();
+                EntityMethodHooks.setBypass(false);
+                if (aliveResult) {
+                    detectMethodRewrite(target);
+                }
+            } catch (Throwable ignored) {
+                EntityMethodHooks.setBypass(false);
+            }
         }
         return false;
     }
@@ -1703,8 +2288,8 @@ public class KillEnforcer {
                         f.setAccessible(true);
                         String name = f.getName();
 
-                        if (name.equals("previouslyKilled") || name.equals("f_64068_")
-                                || name.equals("dragonKilled") || name.equals("f_64069_")) {
+                        if (name.equals("previouslyKilled") || name.equals("f_64069_")
+                                || name.equals("dragonKilled") || name.equals("f_64068_")) {
                             f.setBoolean(dragonFight, true);
                         }
                     } catch (Throwable ignored) {}
@@ -1776,7 +2361,6 @@ public class KillEnforcer {
                 return;
             }
             String modPackagePrefix = KillEnforcer.getModPackagePrefix(entityPackage);
-            System.out.println("[LAL] purgeBackingObjects: entity=" + entityClass.getName() + " pkg=" + modPackagePrefix);
             ArrayList<Object> backingObjects = new ArrayList<Object>();
             Set seen = Collections.newSetFromMap(new IdentityHashMap());
             for (Class<?> scanClass = entityClass; scanClass != null && scanClass != Object.class && !scanClass.getName().startsWith("net.minecraft."); scanClass = scanClass.getSuperclass()) {
@@ -1787,7 +2371,6 @@ public class KillEnforcer {
                         f.setAccessible(true);
                         Object backingObj = f.get(target);
                         if (backingObj == null || !seen.add(backingObj)) continue;
-                        System.out.println("[LAL] Found backing object: field=" + f.getName() + " type=" + backingObj.getClass().getName());
                         backingObjects.add(backingObj);
                     }
                     catch (Throwable throwable) {
@@ -1799,9 +2382,37 @@ public class KillEnforcer {
                 Set<Class<?>> boClasses = KillEnforcer.collectModClasses(modPackagePrefix, e.getClass());
                 searchClasses.addAll(boClasses);
             }
-            System.out.println("[LAL] searchClasses count=" + searchClasses.size() + ", backingObjects count=" + backingObjects.size());
+            if (backingObjects.isEmpty()) {
+                List<Object> reverseFound = KillEnforcer.findBackingObjectsReverse(target, searchClasses, seen);
+                backingObjects.addAll(reverseFound);
+                for (Object bo : reverseFound) {
+                    Set<Class<?>> boClasses = KillEnforcer.collectModClasses(modPackagePrefix, bo.getClass());
+                    searchClasses.addAll(boClasses);
+                }
+            }
             for (Object e : backingObjects) {
                 KillEnforcer.markAsRemoved(e);
+                CombatRegistry.addObjectToKillSet(e);
+                if (e instanceof LivingEntity) {
+                    LivingEntity living = (LivingEntity) e;
+                    UUID backingUuid = living.getUUID();
+                    CombatRegistry.addToKillSet(backingUuid);
+                    CombatRegistry.setForcedHealth(backingUuid, 0.0f);
+                    CombatRegistry.trackDirectEntityRef(backingUuid, living);
+                    try {
+                        Level entityLevel = living.level();
+                        if (entityLevel instanceof ServerLevel) {
+                            EntityMethodHooks.setBypass(true);
+                            try {
+                                KillEnforcer.forceKill(living, (ServerLevel) entityLevel, null);
+                            } finally {
+                                EntityMethodHooks.setBypass(false);
+                            }
+                        } else {
+                            KillEnforcer.enforceDeathState(living);
+                        }
+                    } catch (Throwable ignored) {}
+                }
             }
             for (Object e : backingObjects) {
                 for (Class<?> searchClass : searchClasses) {
@@ -1819,10 +2430,232 @@ public class KillEnforcer {
             for (Class clazz : searchClasses) {
                 KillEnforcer.removeFromStaticCollections(target, clazz);
             }
+            try {
+                List<LivingEntity> hiddenInMod = HiddenEntityScanner.findEntitiesFromModCollections(searchClasses);
+                for (LivingEntity hidden : hiddenInMod) {
+                    try {
+                        if (hidden == target) continue;
+                        UUID hiddenUuid = hidden.getUUID();
+                        if (CombatRegistry.isInImmortalSet(hiddenUuid)) continue;
+                        if (CombatRegistry.isInKillSet(hiddenUuid)) continue;
+                        if (CombatRegistry.isDeadConfirmed(hiddenUuid)) continue;
+                        CombatRegistry.addToKillSet(hiddenUuid);
+                        CombatRegistry.setForcedHealth(hiddenUuid, 0.0f);
+                        CombatRegistry.trackDirectEntityRef(hiddenUuid, hidden);
+                        Level hiddenLevel = hidden.level();
+                        if (hiddenLevel instanceof ServerLevel sl) {
+                            EntityMethodHooks.setBypass(true);
+                            try {
+                                KillEnforcer.forceKill(hidden, sl, null);
+                            } finally {
+                                EntityMethodHooks.setBypass(false);
+                            }
+                        } else {
+                            KillEnforcer.enforceDeathState(hidden);
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            } catch (Throwable ignored) {}
             KillEnforcer.deletePersistenceFiles(target);
         }
         catch (Throwable throwable) {
         }
+    }
+
+    private static List<Object> findBackingObjectsReverse(Entity target, Set<Class<?>> searchClasses, Set<Object> seen) {
+        ArrayList<Object> found = new ArrayList<>();
+        try {
+            UUID targetUuid = target.getUUID();
+            double targetX = target.getX();
+            double targetY = target.getY();
+            double targetZ = target.getZ();
+            String modPkg = KillEnforcer.getModPackagePrefix(target.getClass().getPackageName());
+            for (Class<?> searchClass : new ArrayList<>(searchClasses)) {
+                for (Class<?> clazz = searchClass; clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
+                    if (clazz.getName().startsWith("java.") || clazz.getName().startsWith("net.minecraft.")) break;
+                    for (Field f : KillEnforcer.safeGetDeclaredFields(clazz)) {
+                        if (!Modifier.isStatic(f.getModifiers())) continue;
+                        try {
+                            f.setAccessible(true);
+                            Object val = f.get(null);
+                            if (val == null) continue;
+                            if (val instanceof List) {
+                                KillEnforcer.scanListForBackingObjects((List<?>) val, target, targetUuid, targetX, targetY, targetZ, modPkg, seen, found);
+                            }
+                            if (val instanceof Map) {
+                                try {
+                                    for (Object mv : new ArrayList<>(((Map<?, ?>) val).values())) {
+                                        if (mv == null) continue;
+                                        if (mv instanceof List) {
+                                            KillEnforcer.scanListForBackingObjects((List<?>) mv, target, targetUuid, targetX, targetY, targetZ, modPkg, seen, found);
+                                        } else if (KillEnforcer.isBackingObjectCandidate(mv, target, targetUuid, targetX, targetY, targetZ, modPkg, seen)) {
+                                            seen.add(mv);
+                                            found.add(mv);
+                                        }
+                                    }
+                                } catch (Throwable ignored) {}
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return found;
+    }
+
+    private static void scanListForBackingObjects(List<?> list, Entity target, UUID targetUuid, double tX, double tY, double tZ, String modPkg, Set<Object> seen, List<Object> found) {
+        try {
+            Object[] elements = null;
+            int size = 0;
+            try {
+                Object unsafe = KillEnforcer.getUnsafe();
+                if (unsafe != null && list instanceof ArrayList) {
+                    Class<?> uc = unsafe.getClass();
+                    Method ofo = uc.getMethod("objectFieldOffset", Field.class);
+                    Method go = uc.getMethod("getObject", Object.class, Long.TYPE);
+                    Method gi = uc.getMethod("getInt", Object.class, Long.TYPE);
+                    Field edf = ArrayList.class.getDeclaredField("elementData");
+                    Field sf = ArrayList.class.getDeclaredField("size");
+                    long dOff = (Long) ofo.invoke(unsafe, edf);
+                    long sOff = (Long) ofo.invoke(unsafe, sf);
+                    elements = (Object[]) go.invoke(unsafe, list, dOff);
+                    size = (Integer) gi.invoke(unsafe, list, sOff);
+                }
+            } catch (Throwable ignored) {}
+            if (elements != null) {
+                for (int i = 0; i < size && i < elements.length; i++) {
+                    try {
+                        Object element = elements[i];
+                        if (element == null) continue;
+                        if (KillEnforcer.isBackingObjectCandidate(element, target, targetUuid, tX, tY, tZ, modPkg, seen)) {
+                            seen.add(element);
+                            found.add(element);
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            } else {
+                int listSize;
+                try { listSize = list.size(); } catch (Throwable t) { return; }
+                for (int i = 0; i < listSize; i++) {
+                    try {
+                        Object element = list.get(i);
+                        if (element == null) continue;
+                        if (KillEnforcer.isBackingObjectCandidate(element, target, targetUuid, tX, tY, tZ, modPkg, seen)) {
+                            seen.add(element);
+                            found.add(element);
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static boolean isBackingObjectCandidate(Object element, Entity target, UUID targetUuid, double tX, double tY, double tZ, String modPkg, Set<Object> seen) {
+        try {
+            if (element instanceof String) return false;
+            if (element == target) return false;
+            Class<?> elementClass = element.getClass();
+            if (elementClass.isPrimitive()) return false;
+            String className = elementClass.getName();
+            if (className.startsWith("java.") || className.startsWith("net.minecraft.") || className.startsWith("net.minecraftforge.")) return false;
+            if (!className.startsWith(modPkg)) return false;
+            if (seen.contains(element)) return false;
+            boolean isEntity = element instanceof Entity;
+            boolean hasEntityRef = false;
+            double[] pos = new double[]{Double.NaN, Double.NaN, Double.NaN};
+            for (Class<?> clazz = elementClass; clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
+                if (clazz.getName().startsWith("java.")) break;
+                for (Field f : KillEnforcer.safeGetDeclaredFields(clazz)) {
+                    if (Modifier.isStatic(f.getModifiers())) continue;
+                    try {
+                        f.setAccessible(true);
+                        Class<?> type = f.getType();
+                        if (Entity.class.isAssignableFrom(type)) {
+                            Object val = f.get(element);
+                            if (val == target) { hasEntityRef = true; continue; }
+                            if (val instanceof Entity) {
+                                UUID valUuid = jp.mikumiku.lal.util.FieldAccessUtil.getEntityUuidDirect((Entity) val);
+                                if (valUuid == null) valUuid = ((Entity) val).getUUID();
+                                if (targetUuid.equals(valUuid)) { hasEntityRef = true; continue; }
+                            }
+                        }
+                        if (type == UUID.class) {
+                            Object val = f.get(element);
+                            if (targetUuid.equals(val)) { hasEntityRef = true; continue; }
+                        }
+                        if (type == Integer.TYPE) {
+                            String name = f.getName().toLowerCase();
+                            if (name.contains("id") || name.contains("entity")) {
+                                int val = f.getInt(element);
+                                int targetId = jp.mikumiku.lal.util.FieldAccessUtil.getEntityIdDirect(target);
+                                if (targetId <= 0) targetId = target.getId();
+                                if (val == targetId && val != 0) { hasEntityRef = true; continue; }
+                            }
+                        }
+                        if (type == Double.TYPE) {
+                            String name = f.getName().toLowerCase();
+                            double val = f.getDouble(element);
+                            if (name.equals("x") || name.equals("posx") || name.endsWith("_x") || name.equals("positionx")) { pos[0] = val; }
+                            else if (name.equals("y") || name.equals("posy") || name.endsWith("_y") || name.equals("positiony")) { pos[1] = val; }
+                            else if (name.equals("z") || name.equals("posz") || name.endsWith("_z") || name.equals("positionz")) { pos[2] = val; }
+                        }
+                        if (type == Float.TYPE) {
+                            String name = f.getName().toLowerCase();
+                            float val = f.getFloat(element);
+                            if (name.equals("x") || name.equals("posx") || name.endsWith("_x") || name.equals("positionx")) { pos[0] = val; }
+                            else if (name.equals("y") || name.equals("posy") || name.endsWith("_y") || name.equals("positiony")) { pos[1] = val; }
+                            else if (name.equals("z") || name.equals("posz") || name.endsWith("_z") || name.equals("positionz")) { pos[2] = val; }
+                        }
+                        if (!type.isPrimitive() && !type.getName().startsWith("java.lang.")) {
+                            String typeName = type.getSimpleName().toLowerCase();
+                            if (typeName.contains("vec") || typeName.contains("pos") || typeName.contains("block") || typeName.contains("coord") || typeName.contains("location")) {
+                                try {
+                                    Object posObj = f.get(element);
+                                    if (posObj != null) {
+                                        for (Field pf : KillEnforcer.safeGetDeclaredFields(type)) {
+                                            if (Modifier.isStatic(pf.getModifiers())) continue;
+                                            String pname = pf.getName().toLowerCase();
+                                            pf.setAccessible(true);
+                                            if (pf.getType() == Double.TYPE) {
+                                                double pval = pf.getDouble(posObj);
+                                                if (pname.equals("x")) pos[0] = pval;
+                                                else if (pname.equals("y")) pos[1] = pval;
+                                                else if (pname.equals("z")) pos[2] = pval;
+                                            } else if (pf.getType() == Integer.TYPE) {
+                                                int pval = pf.getInt(posObj);
+                                                if (pname.equals("x")) pos[0] = pval;
+                                                else if (pname.equals("y")) pos[1] = pval;
+                                                else if (pname.equals("z")) pos[2] = pval;
+                                            }
+                                        }
+                                    }
+                                } catch (Throwable ignored) {}
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
+            if (hasEntityRef) return true;
+            if (isEntity) {
+                if (element instanceof LivingEntity) {
+                    Entity e = (Entity) element;
+                    double dx = e.getX() - tX;
+                    double dy = e.getY() - tY;
+                    double dz = e.getZ() - tZ;
+                    if (dx * dx + dy * dy + dz * dz < 256.0) return true;
+                }
+                return false;
+            }
+            if (!Double.isNaN(pos[0]) && !Double.isNaN(pos[1]) && !Double.isNaN(pos[2])) {
+                double dx = pos[0] - tX;
+                double dy = pos[1] - tY;
+                double dz = pos[2] - tZ;
+                if (dx * dx + dy * dy + dz * dz < 16.0) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {}
+        return false;
     }
 
     private static String getModPackagePrefix(String packageName) {
@@ -1834,6 +2667,13 @@ public class KillEnforcer {
     }
 
     private static Set<Class<?>> collectModClasses(String modPackagePrefix, Class<?> entityClass) {
+        String cacheKey = modPackagePrefix + "|" + entityClass.getName();
+        Set<Class<?>> cached = MOD_CLASS_CACHE.get(cacheKey);
+        if (cached != null) {
+            LinkedHashSet result = new LinkedHashSet(cached);
+            result.add(entityClass);
+            return result;
+        }
         LinkedHashSet classes = new LinkedHashSet();
         classes.add(entityClass);
         try {
@@ -1844,6 +2684,7 @@ public class KillEnforcer {
                     classes.add(clazz);
                 }
                 if (classes.size() > 1) {
+                    MOD_CLASS_CACHE.put(cacheKey, new LinkedHashSet(classes));
                     return classes;
                 }
             }
@@ -1950,6 +2791,7 @@ public class KillEnforcer {
             catch (Throwable throwable) {
             }
         }
+        MOD_CLASS_CACHE.put(cacheKey, new LinkedHashSet(classes));
         return classes;
     }
 
@@ -2001,11 +2843,14 @@ public class KillEnforcer {
                             if (!entryName.startsWith(packagePath) || !entryName.endsWith(".class")) continue;
                             String className = entryName.replace('/', '.').replace(".class", "");
                             if (className.startsWith("org.objectweb.asm.") || className.startsWith("org.spongepowered.asm.") || className.startsWith("org.apache.") || className.startsWith("com.google.gson.") || className.startsWith("org.slf4j.")) continue;
+                            if (FAILED_CLASS_NAMES.contains(className)) continue;
                             try {
                                 Class<?> c = Class.forName(className, false, cl);
                                 found.add(c);
                             }
-                            catch (Throwable throwable) {}
+                            catch (Throwable throwable) {
+                                FAILED_CLASS_NAMES.add(className);
+                            }
                         }
                         break block23;
                     }
@@ -2035,11 +2880,13 @@ public class KillEnforcer {
             }
             if (!f.getName().endsWith(".class") || (pkgIdx = (absPath = f.getAbsolutePath()).indexOf(packagePath)) < 0) continue;
             String className = absPath.substring(pkgIdx).replace(File.separatorChar, '.').replace(".class", "");
+            if (FAILED_CLASS_NAMES.contains(className)) continue;
             try {
                 Class<?> c = Class.forName(className, false, cl);
                 found.add(c);
             }
             catch (Throwable throwable) {
+                FAILED_CLASS_NAMES.add(className);
             }
         }
     }
@@ -2234,10 +3081,8 @@ public class KillEnforcer {
                         KillEnforcer.forceRemoveFromList(list, target);
                         int sizeAfter = list.size();
                         if (sizeBefore != sizeAfter) {
-                            System.out.println("[LAL] Removed from static list: " + clazz.getSimpleName() + "." + f.getName() + " size " + sizeBefore + "->" + sizeAfter);
                         }
                         if (!KillEnforcer.listContainsViaUnsafe(list, target)) continue;
-                        System.out.println("[LAL] forceReplace static list: " + clazz.getSimpleName() + "." + f.getName());
                         ArrayList filtered = new ArrayList(list.size());
                         for (Object item : new ArrayList<>(list)) {
                             if (item == null || item == target) continue;
@@ -2439,6 +3284,7 @@ public class KillEnforcer {
     }
 
     private static boolean listContainsViaUnsafe(List<?> list, Object target) {
+        if (!(list instanceof ArrayList)) return false;
         try {
             Object unsafe = KillEnforcer.getUnsafe();
             if (unsafe == null) {
@@ -2632,6 +3478,7 @@ public class KillEnforcer {
     }
 
     private static boolean forceRemoveFromListReflection(List<?> list, Object target) {
+        if (!(list instanceof ArrayList)) return false;
         try {
             Field elementDataField = ArrayList.class.getDeclaredField("elementData");
             elementDataField.setAccessible(true);
@@ -2667,6 +3514,7 @@ public class KillEnforcer {
     }
 
     private static void forceRemoveFromListUnsafe(List<?> list, Object target) {
+        if (!(list instanceof ArrayList)) return;
         try {
             Object unsafe = KillEnforcer.getUnsafe();
             if (unsafe == null) {
@@ -2891,21 +3739,21 @@ public class KillEnforcer {
         block15: {
             try {
                 MethodHandles.Lookup livingLookup = MethodHandles.privateLookupIn(LivingEntity.class, MethodHandles.lookup());
-                HEALTH_HANDLE = FieldAccessUtil.findVarHandle(livingLookup, LivingEntity.class, Float.TYPE, "f_20958_", "health");
-                DEATH_TIME_HANDLE = FieldAccessUtil.findVarHandle(livingLookup, LivingEntity.class, Integer.TYPE, "f_20962_", "deathTime");
-                DEAD_HANDLE = FieldAccessUtil.findVarHandle(livingLookup, LivingEntity.class, Boolean.TYPE, "f_20960_", "dead");
+                HEALTH_HANDLE = FieldAccessUtil.findVarHandle(livingLookup, LivingEntity.class, Float.TYPE, "f_20769_", "health");
+                DEATH_TIME_HANDLE = FieldAccessUtil.findVarHandle(livingLookup, LivingEntity.class, Integer.TYPE, "f_20919_", "deathTime");
+                DEAD_HANDLE = FieldAccessUtil.findVarHandle(livingLookup, LivingEntity.class, Boolean.TYPE, "f_20890_", "dead");
                 MethodHandles.Lookup entityLookup = MethodHandles.privateLookupIn(Entity.class, MethodHandles.lookup());
-                REMOVAL_REASON_HANDLE = FieldAccessUtil.findVarHandle(entityLookup, Entity.class, Entity.RemovalReason.class, "f_146801_", "removalReason");
-                if (HEALTH_HANDLE == null && (HEALTH_FIELD = KillEnforcer.findFieldByType(LivingEntity.class, Float.TYPE, "f_20958_", "health")) != null) {
+                REMOVAL_REASON_HANDLE = FieldAccessUtil.findVarHandle(entityLookup, Entity.class, Entity.RemovalReason.class, "f_146795_", "removalReason");
+                if (HEALTH_HANDLE == null && (HEALTH_FIELD = KillEnforcer.findFieldByType(LivingEntity.class, Float.TYPE, "f_20769_", "health")) != null) {
                 }
-                if (DEATH_TIME_HANDLE == null && (DEATH_TIME_FIELD = KillEnforcer.findFieldByType(LivingEntity.class, Integer.TYPE, "f_20962_", "deathTime")) != null) {
+                if (DEATH_TIME_HANDLE == null && (DEATH_TIME_FIELD = KillEnforcer.findFieldByType(LivingEntity.class, Integer.TYPE, "f_20919_", "deathTime")) != null) {
                 }
-                if (DEAD_HANDLE == null && (DEAD_FIELD = KillEnforcer.findFieldByType(LivingEntity.class, Boolean.TYPE, "f_20960_", "dead")) != null) {
+                if (DEAD_HANDLE == null && (DEAD_FIELD = KillEnforcer.findFieldByType(LivingEntity.class, Boolean.TYPE, "f_20890_", "dead")) != null) {
                 }
-                if (REMOVAL_REASON_HANDLE == null && (REMOVAL_REASON_FIELD = KillEnforcer.findFieldByType(Entity.class, Entity.RemovalReason.class, "f_146801_", "removalReason")) != null) {
+                if (REMOVAL_REASON_HANDLE == null && (REMOVAL_REASON_FIELD = KillEnforcer.findFieldByType(Entity.class, Entity.RemovalReason.class, "f_146795_", "removalReason")) != null) {
                 }
                 DROP_ALL_DEATH_LOOT = KillEnforcer.findMethod(LivingEntity.class, new String[]{"m_6668_", "dropAllDeathLoot"}, DamageSource.class);
-                GET_EXPERIENCE_REWARD = KillEnforcer.findMethod(LivingEntity.class, new String[]{"m_6552_", "getExperienceReward"}, new Class[0]);
+                GET_EXPERIENCE_REWARD = KillEnforcer.findMethod(LivingEntity.class, new String[]{"m_213860_", "getExperienceReward"}, new Class[0]);
                 try {
                     MethodHandles.Lookup specialLookup = MethodHandles.privateLookupIn(Entity.class, MethodHandles.lookup());
                     ENTITY_SET_REMOVED = specialLookup.findSpecial(Entity.class, "setRemoved", MethodType.methodType(Void.TYPE, Entity.RemovalReason.class), Entity.class);
@@ -2924,7 +3772,7 @@ public class KillEnforcer {
                 }
                 catch (Throwable e) {
                 }
-                for (String name : new String[]{"f_135354_", "itemsById"}) {
+                for (String name : new String[]{"f_135345_", "itemsById"}) {
                     try {
                         ENTITY_DATA_ITEMS_BY_ID = SynchedEntityData.class.getDeclaredField(name);
                         ENTITY_DATA_ITEMS_BY_ID.setAccessible(true);

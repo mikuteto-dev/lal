@@ -1,9 +1,13 @@
 package jp.mikumiku.lal.client;
 
 import com.mojang.blaze3d.platform.InputConstants;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import jp.mikumiku.lal.core.CombatRegistry;
 import jp.mikumiku.lal.item.LALSwordItem;
 import jp.mikumiku.lal.transformer.EntityMethodHooks;
+import jp.mikumiku.lal.util.MixinUtil;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.DeathScreen;
@@ -13,14 +17,24 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.player.Player;
-import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
-import net.minecraftforge.event.TickEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.fml.common.Mod;
 
-@Mod.EventBusSubscriber(modid = "lal", value = {Dist.CLIENT})
 public class LALClientHandler {
+    private static final Set<UUID> localImmortalSet = ConcurrentHashMap.newKeySet();
+
+
+    public static void handleImmortalSync(UUID targetUuid, boolean isImmortal) {
+        if (isImmortal) {
+            localImmortalSet.add(targetUuid);
+        } else {
+            localImmortalSet.remove(targetUuid);
+        }
+    }
+
+    public static boolean isLocallyImmortal(UUID uuid) {
+        return localImmortalSet.contains(uuid);
+    }
+
     private static final float BOOST_FLY_SPEED = 0.15f;
     private static final float NORMAL_FLY_SPEED = 0.05f;
     private static final float BOOST_WALK_SPEED = 0.2f;
@@ -29,15 +43,14 @@ public class LALClientHandler {
     public static final KeyMapping BOOST_KEY = new KeyMapping(
             "key.lal.boost_mode", InputConstants.Type.KEYSYM, 86, "key.categories.lal");
 
-    @SubscribeEvent
-    public static void onClientTick(TickEvent.ClientTickEvent event) {
-        if (event.phase != TickEvent.Phase.END) return;
+    public static void onClientTickDirect() {
         LocalPlayer player = Minecraft.getInstance().player;
         if (player == null) return;
         Minecraft mc = Minecraft.getInstance();
         if (mc.screen instanceof DeathScreen) {
             if (LALSwordItem.hasLALEquipment((Player) player)
-                    || CombatRegistry.isInImmortalSet(player.getUUID())) {
+                    || CombatRegistry.isInImmortalSet(player.getUUID())
+                    || localImmortalSet.contains(player.getUUID())) {
                 mc.setScreen(null);
             }
         }
@@ -52,8 +65,7 @@ public class LALClientHandler {
             try {
                 float dataHealth = player.getEntityData().get(LivingEntity.DATA_HEALTH_ID);
                 if (dataHealth <= 0.0f) {
-                    float max = player.getMaxHealth();
-                    if (max <= 0.0f) max = 20.0f;
+                    float max = MixinUtil.safeMaxHealth(player);
                     EntityMethodHooks.setBypass(true);
                     try {
                         player.getEntityData().set(LivingEntity.DATA_HEALTH_ID, max);

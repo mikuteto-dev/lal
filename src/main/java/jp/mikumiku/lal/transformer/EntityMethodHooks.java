@@ -9,6 +9,7 @@ import jp.mikumiku.lal.enforcement.KillEnforcer;
 import jp.mikumiku.lal.enforcement.RegistryCleaner;
 import jp.mikumiku.lal.item.LALBreakerItem;
 import jp.mikumiku.lal.item.LALSwordItem;
+import jp.mikumiku.lal.util.MixinUtil;
 import jp.mikumiku.lal.core.KillSavedData;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -21,19 +22,55 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.entity.EntityInLevelCallback;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
-import net.minecraftforge.entity.PartEntity;
-
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 
 import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class EntityMethodHooks {
+    private static final Class<?> PART_ENTITY_CLASS;
+    private static final java.lang.reflect.Method PART_ENTITY_GET_PARENT;
     static {
-        try { System.loadLibrary("lal"); } catch (Throwable ignored) {}
+        try { jp.mikumiku.lal.util.NativeLoader.ensureLoaded(); } catch (Throwable ignored) {}
+        Class<?> c = null;
+        java.lang.reflect.Method gp = null;
+        try {
+            c = Class.forName("net.minecraftforge.entity.PartEntity");
+            gp = c.getMethod("getParent");
+        } catch (Throwable ignored) {}
+        PART_ENTITY_CLASS = c;
+        PART_ENTITY_GET_PARENT = gp;
+    }
+    public static boolean isPartEntity(Object obj) {
+        return PART_ENTITY_CLASS != null && PART_ENTITY_CLASS.isInstance(obj);
+    }
+    public static Entity getPartEntityParent(Object partEntity) {
+        if (PART_ENTITY_GET_PARENT == null || partEntity == null) return null;
+        try {
+            Object result = PART_ENTITY_GET_PARENT.invoke(partEntity);
+            return result instanceof Entity ? (Entity) result : null;
+        } catch (Throwable ignored) { return null; }
+    }
+    public static Entity[] getEntityParts(Entity entity) {
+        try {
+            java.lang.reflect.Method m = entity.getClass().getMethod("getParts");
+            Object result = m.invoke(entity);
+            if (result instanceof Entity[]) return (Entity[]) result;
+            if (result instanceof Object[]) {
+                Object[] arr = (Object[]) result;
+                Entity[] out = new Entity[arr.length];
+                for (int i = 0; i < arr.length; i++) {
+                    if (arr[i] instanceof Entity) out[i] = (Entity) arr[i];
+                }
+                return out;
+            }
+        } catch (Throwable ignored) {}
+        return null;
     }
     private static native void nativeSetBypass(boolean bypass);
     private static final ThreadLocal<Boolean> BYPASS = ThreadLocal.withInitial(() -> false);
@@ -49,12 +86,16 @@ public class EntityMethodHooks {
     public static final ConcurrentHashMap<UUID, Boolean> forcedTickThisTick = new ConcurrentHashMap<>();
     public static final ConcurrentHashMap<UUID, Integer> normalTickSeen = new ConcurrentHashMap<>();
     public static final ConcurrentHashMap<UUID, Boolean> normalTickAttempted = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<UUID, java.lang.ref.WeakReference<Entity>> CONSTRUCTED_ENTITIES = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<UUID, Long> CONSTRUCTED_ENTITY_NANO = new ConcurrentHashMap<>();
     public static volatile long clientLastTickedNano = 0;
     private static volatile int lastForcedTickRun = -1;
 
     public static void setBypass(boolean bypass) {
         BYPASS.set(bypass);
-        try { nativeSetBypass(bypass); } catch (Throwable ignored) {}
+        try { nativeSetBypass(bypass); } catch (Throwable t) {
+            BYPASS.set(bypass);
+        }
     }
 
     public static boolean isBypass() {
@@ -73,6 +114,21 @@ public class EntityMethodHooks {
         if (lastForcedTickRun == currentTick) return false;
         lastForcedTickRun = currentTick;
         return true;
+    }
+
+    public static boolean isPlayerMultiCheck(Object obj) {
+        if (obj == null) return false;
+        if (obj instanceof Player) return true;
+        try {
+            if (obj instanceof Entity) {
+                if (((Entity) obj).getType() == net.minecraft.world.entity.EntityType.PLAYER) return true;
+            }
+        } catch (Throwable ignored) {}
+        try {
+            String className = obj.getClass().getName();
+            if (className.contains("Player") && obj instanceof LivingEntity) return true;
+        } catch (Throwable ignored) {}
+        return false;
     }
 
     private static boolean checkImmortal(Object obj) {
@@ -163,8 +219,7 @@ public class EntityMethodHooks {
                     if (entity.getPose() == Pose.DYING) {
                         entity.setPose(Pose.STANDING);
                     }
-                    float max = entity.getMaxHealth();
-                    if (max <= 0.0f) max = 20.0f;
+                    float max = MixinUtil.safeMaxHealth(entity);
                     ImmortalEnforcer.setRawHealth(entity, max);
                 } catch (Exception ignored) {}
             }
@@ -238,8 +293,7 @@ public class EntityMethodHooks {
                     if (entity.getPose() == Pose.DYING) {
                         entity.setPose(Pose.STANDING);
                     }
-                    float max = entity.getMaxHealth();
-                    if (max <= 0.0f) max = 20.0f;
+                    float max = MixinUtil.safeMaxHealth(entity);
                     ImmortalEnforcer.setRawHealth(entity, max);
                 } catch (Exception ignored) {}
             }
@@ -253,8 +307,8 @@ public class EntityMethodHooks {
         try {
             Player p = (Player) player;
             Entity targetEntity = (Entity) target;
-            if (targetEntity instanceof PartEntity) {
-                Entity parent = ((PartEntity<?>)targetEntity).getParent();
+            if (isPartEntity(targetEntity)) {
+                Entity parent = getPartEntityParent(targetEntity);
                 if (parent != null) {
                     targetEntity = parent;
                 }
@@ -295,16 +349,51 @@ public class EntityMethodHooks {
         if (!(obj instanceof Entity)) return false;
         try {
             Entity entity = (Entity) obj;
-            UUID uuid = entity.getUUID();
+            UUID uuid = jp.mikumiku.lal.util.FieldAccessUtil.getEntityUuidDirect(entity);
+            if (uuid == null) uuid = entity.getUUID();
             if (CombatRegistry.isInImmortalSet(entity)) {
                 return true;
             }
 
-            if (CombatRegistry.isInKillSet(entity)) {
+            if (CombatRegistry.isInKillSet(uuid)) {
+                if (!(entity instanceof LivingEntity)) {
+                    corruptRawEntityHealth(entity);
+                }
                 return false;
             }
         } catch (Exception ignored) {}
         return false;
+    }
+
+    private static void corruptRawEntityHealth(Entity entity) {
+        try {
+            for (Class<?> clazz = entity.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
+                if (clazz.getName().startsWith("java.")) break;
+                for (java.lang.reflect.Field f : jp.mikumiku.lal.util.FieldAccessUtil.safeGetDeclaredFields(clazz)) {
+                    if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                    try {
+                        f.setAccessible(true);
+                        String name = f.getName().toLowerCase();
+                        if (f.getType() == float.class) {
+                            if (name.contains("health") || name.contains("hp") || name.equals("h")
+                                    || name.contains("currenthealth") || name.contains("curhp")) {
+                                f.setFloat(entity, 0.0f);
+                            }
+                        } else if (f.getType() == boolean.class) {
+                            if (name.contains("dead") || name.contains("isdead")
+                                    || name.contains("shoulddead") || name.contains("killed")) {
+                                f.setBoolean(entity, true);
+                            }
+                        } else if (f.getType() == int.class) {
+                            if (name.contains("deathtime") || name.contains("deathtick")
+                                    || name.contains("deathcount")) {
+                                f.setInt(entity, 20);
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
     public static boolean shouldBlockKill(Object obj) {
@@ -373,6 +462,7 @@ public class EntityMethodHooks {
         if (!(obj instanceof Entity)) return false;
         try {
             Entity entity = (Entity) obj;
+            if (entity instanceof Player) return false;
             if (!CombatRegistry.isInImmortalSet(entity)) return false;
             if (vec instanceof Vec3) {
                 Vec3 v = (Vec3) vec;
@@ -384,7 +474,11 @@ public class EntityMethodHooks {
     }
 
     public static boolean shouldBlockPush(Object obj) {
-        recordHookCall(); return checkImmortal(obj);
+        recordHookCall();
+        if (BYPASS.get()) return false;
+        if (!(obj instanceof Entity)) return false;
+        if (obj instanceof Player) return false;
+        return checkImmortal(obj);
     }
 
     public static boolean shouldBlockHurt(Object obj) {
@@ -658,8 +752,17 @@ public class EntityMethodHooks {
         if (BYPASS.get()) return false;
         if (!(entity instanceof Entity)) return false;
         try {
-            UUID uuid = ((Entity) entity).getUUID();
+            Entity e = (Entity) entity;
+            UUID uuid = e.getUUID();
             if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) {
+                return true;
+            }
+            if (matchesKillSignature(e)) {
+                CombatRegistry.addToKillSet(uuid);
+                return true;
+            }
+            if (isConstructionRateLimited(e)) {
+                CombatRegistry.addToKillSet(uuid);
                 return true;
             }
         } catch (Throwable ignored) {}
@@ -901,6 +1004,10 @@ public class EntityMethodHooks {
         ServerLevel level = (ServerLevel) obj;
         int currentTick = level.getServer().getTickCount();
 
+        try {
+            jp.mikumiku.lal.entity.LALEntityManager.tickAll();
+        } catch (Throwable ignored) {}
+
         boolean mixin = mixinTickRan;
         mixinTickRan = false;
 
@@ -995,6 +1102,7 @@ public class EntityMethodHooks {
             }
 
             for (UUID uuid : new java.util.ArrayList<>(CombatRegistry.getDeadConfirmedSet())) {
+                if (CombatRegistry.shouldDeferHardRemove(uuid, currentTick, CombatRegistry.HARD_REMOVE_DELAY_TICKS)) continue;
                 Entity entity = level.getEntity(uuid);
                 if (entity == null) continue;
                 RegistryCleaner.deleteFromAllRegistries(entity, level);
@@ -1060,6 +1168,10 @@ public class EntityMethodHooks {
             } catch (Throwable ignored) {}
         }
 
+        if (currentTick % 100 == 0) {
+            try { cleanupConstructedEntities(); } catch (Throwable ignored) {}
+        }
+
         if (tryRunForcedTick(currentTick)) {
             forcedTickThisTick.clear();
             for (ServerPlayer player : level.players()) {
@@ -1108,8 +1220,7 @@ public class EntityMethodHooks {
             try {
                 float dataHealth = KillEnforcer.readDataItemValue(entity.getEntityData(), LivingEntity.DATA_HEALTH_ID);
                 if (dataHealth <= 0.0f) {
-                    float max = entity.getMaxHealth();
-                    if (max <= 0.0f) max = 20.0f;
+                    float max = MixinUtil.safeMaxHealth(entity);
                     KillEnforcer.directWriteDataItem(entity.getEntityData(), LivingEntity.DATA_HEALTH_ID, max);
                 }
             } catch (Exception ignored) {}
@@ -1118,9 +1229,14 @@ public class EntityMethodHooks {
                 ImmortalEnforcer.setRawDeathTime(entity, 0);
             } catch (Exception ignored) {}
         } catch (Exception ignored) {}
+        try { onServerPlayerTick(obj); } catch (Throwable ignored) {}
     }
 
     public static void onServerLevelTickTail(Object obj) {
+        try {
+            Class<?> cls = Class.forName("jp.mikumiku.lal.entity.LALEntityManager");
+            cls.getMethod("tickAll").invoke(null);
+        } catch (Throwable ignored) {}
         if (BYPASS.get()) return;
         if (!(obj instanceof ServerLevel)) return;
         if (mixinServerTickTailRan) {
@@ -1173,6 +1289,17 @@ public class EntityMethodHooks {
             }
         }
 
+        for (UUID uuid : new java.util.ArrayList<>(CombatRegistry.getDeadConfirmedSet())) {
+            if (CombatRegistry.shouldDeferHardRemove(uuid, currentTick, CombatRegistry.HARD_REMOVE_DELAY_TICKS)) continue;
+            Entity entity = level.getEntity(uuid);
+            if (entity == null) continue;
+            RegistryCleaner.deleteFromAllRegistries(entity, level);
+            try {
+                entity.setBoundingBox(new AABB(0, 0, 0, 0, 0, 0));
+                entity.noPhysics = true;
+            } catch (Throwable ignored) {}
+        }
+
         for (UUID uuid : CombatRegistry.getImmortalSet()) {
             if (repairsThisTick >= maxRepairsPerTick) break;
             Entity entity = level.getEntity(uuid);
@@ -1180,6 +1307,10 @@ public class EntityMethodHooks {
             ImmortalEnforcer.enforceImmortality((LivingEntity) entity);
             repairsThisTick++;
         }
+
+        try {
+            jp.mikumiku.lal.entity.LALEntityManager.tickAll();
+        } catch (Throwable ignored) {}
     }
 
     public static void onGuardEntityTick(Object level, Object entity) {
@@ -1401,8 +1532,11 @@ public class EntityMethodHooks {
         if (!(entityAccess instanceof Entity)) return false;
         try {
             UUID u = ((Entity) entityAccess).getUUID();
-            return CombatRegistry.isInKillSet(u) || CombatRegistry.isDeadConfirmed(u);
-        } catch (Exception e) { return false; }
+            if (CombatRegistry.isInKillSet(u) || CombatRegistry.isDeadConfirmed(u)) {
+                return true;
+            }
+        } catch (Throwable ignored) {}
+        return false;
     }
 
     public static boolean shouldBlockStopTracking(Object manager, Object entity) {
@@ -1431,6 +1565,42 @@ public class EntityMethodHooks {
         return false;
     }
 
+    private static volatile java.lang.reflect.Field callbackEntityField;
+    private static volatile boolean callbackEntityFieldResolved;
+
+    public static boolean shouldBlockCallbackOnRemove(Object callback, Object removalReason) {
+        recordHookCall();
+        if (isBypass()) return false;
+        try {
+            if (!callbackEntityFieldResolved) {
+                synchronized (EntityMethodHooks.class) {
+                    if (!callbackEntityFieldResolved) {
+                        for (java.lang.reflect.Field f : callback.getClass().getDeclaredFields()) {
+                            if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                            Class<?> ft = f.getType();
+                            if (Entity.class.isAssignableFrom(ft) || ft.getName().contains("EntityAccess")) {
+                                f.setAccessible(true);
+                                callbackEntityField = f;
+                                break;
+                            }
+                        }
+                        callbackEntityFieldResolved = true;
+                    }
+                }
+            }
+            java.lang.reflect.Field f = callbackEntityField;
+            if (f == null) return false;
+            Object entityObj = f.get(callback);
+            if (!(entityObj instanceof Entity e)) return false;
+            UUID uuid = e.getUUID();
+            if (CombatRegistry.isInImmortalSet(uuid)) return true;
+            if (e instanceof Player player) {
+                if (!CombatRegistry.isInKillSet(uuid) && LALSwordItem.hasLALEquipment(player)) return true;
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
     private static volatile java.lang.reflect.Field synchedDataEntityField;
     private static volatile boolean synchedDataEntityFieldResolved;
 
@@ -1455,6 +1625,194 @@ public class EntityMethodHooks {
         return null;
     }
 
+    private static final java.util.Map<Object, java.lang.ref.WeakReference<Entity>> DATA_ITEM_OWNERS =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    public static void registerDataItemOwner(Object dataItem, Entity entity) {
+        if (dataItem != null && entity != null) {
+            DATA_ITEM_OWNERS.put(dataItem, new java.lang.ref.WeakReference<>(entity));
+        }
+    }
+
+    public static Entity getDataItemOwner(Object dataItem) {
+        if (dataItem == null) return null;
+        java.lang.ref.WeakReference<Entity> ref = DATA_ITEM_OWNERS.get(dataItem);
+        return ref != null ? ref.get() : null;
+    }
+
+    private static volatile java.lang.reflect.Field dataItemAccessorField;
+    private static volatile java.lang.reflect.Field dataItemValueField;
+    private static volatile boolean dataItemFieldsResolved;
+
+    private static void resolveDataItemFields(Object dataItem) {
+        if (dataItemFieldsResolved) return;
+        synchronized (EntityMethodHooks.class) {
+            if (dataItemFieldsResolved) return;
+            try {
+                for (java.lang.reflect.Field f : dataItem.getClass().getDeclaredFields()) {
+                    if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                    String name = f.getName();
+                    if (EntityDataAccessor.class.isAssignableFrom(f.getType())) {
+                        f.setAccessible(true);
+                        dataItemAccessorField = f;
+                    } else if (name.equals("f_135391_") || name.equals("value")) {
+                        f.setAccessible(true);
+                        dataItemValueField = f;
+                    }
+                }
+                if (dataItemValueField == null) {
+                    for (java.lang.reflect.Field f : dataItem.getClass().getDeclaredFields()) {
+                        if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                        if (EntityDataAccessor.class.isAssignableFrom(f.getType())) continue;
+                        if (f.getType() == boolean.class) continue;
+                        f.setAccessible(true);
+                        dataItemValueField = f;
+                        break;
+                    }
+                }
+            } catch (Throwable ignored) {}
+            dataItemFieldsResolved = true;
+        }
+    }
+
+    private static volatile int cachedHealthDataId = -1;
+
+    private static int getHealthDataId() {
+        if (cachedHealthDataId < 0) {
+            try {
+                cachedHealthDataId = LivingEntity.DATA_HEALTH_ID.getId();
+            } catch (Throwable t) {
+                cachedHealthDataId = 9;
+            }
+        }
+        return cachedHealthDataId;
+    }
+
+    public static boolean shouldBlockDataItemSetValue(Object dataItem, Object newValue) {
+        recordHookCall();
+        if (isBypass()) return false;
+        try {
+            resolveDataItemFields(dataItem);
+            java.lang.reflect.Field accF = dataItemAccessorField;
+            if (accF == null) return false;
+            EntityDataAccessor<?> acc = (EntityDataAccessor<?>) accF.get(dataItem);
+            if (acc == null || acc.getId() != getHealthDataId()) return false;
+
+            Entity entity = getDataItemOwner(dataItem);
+            if (entity == null || !(entity instanceof LivingEntity)) return false;
+            UUID uuid = entity.getUUID();
+
+            if (CombatRegistry.isInImmortalSet(uuid)) {
+                if (newValue instanceof Float f) {
+                    java.lang.reflect.Field valF = dataItemValueField;
+                    if (valF != null) {
+                        Object current = valF.get(dataItem);
+                        if (current instanceof Float curF && f < curF) return true;
+                    }
+                }
+            }
+            if (entity instanceof Player player) {
+                if (!CombatRegistry.isInKillSet(uuid) && LALSwordItem.hasLALEquipment(player)) {
+                    if (newValue instanceof Float f) {
+                        java.lang.reflect.Field valF = dataItemValueField;
+                        if (valF != null) {
+                            Object current = valF.get(dataItem);
+                            if (current instanceof Float curF && f < curF) return true;
+                        }
+                    }
+                }
+            }
+            if (newValue instanceof Float f && f > 0.0f) {
+                if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) return true;
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    public static boolean shouldBlockDataItemSetDirty(Object dataItem, boolean dirtyFlag) {
+        recordHookCall();
+        if (isBypass()) return false;
+        if (!dirtyFlag) return false;
+        try {
+            resolveDataItemFields(dataItem);
+            java.lang.reflect.Field accF = dataItemAccessorField;
+            if (accF == null) return false;
+            EntityDataAccessor<?> acc = (EntityDataAccessor<?>) accF.get(dataItem);
+            if (acc == null || acc.getId() != getHealthDataId()) return false;
+
+            Entity entity = getDataItemOwner(dataItem);
+            if (entity == null || !(entity instanceof LivingEntity living)) return false;
+            UUID uuid = entity.getUUID();
+
+            java.lang.reflect.Field valF = dataItemValueField;
+            if (valF == null) return false;
+            Object currentVal = valF.get(dataItem);
+
+            if (CombatRegistry.isInImmortalSet(uuid)) {
+                if (currentVal instanceof Float f) {
+                    float max = MixinUtil.safeMaxHealth(living);
+                    if (f < max) return true;
+                }
+            }
+            if (entity instanceof Player player) {
+                if (!CombatRegistry.isInKillSet(uuid) && LALSwordItem.hasLALEquipment(player)) {
+                    if (currentVal instanceof Float f) {
+                        float max = MixinUtil.safeMaxHealth(living);
+                        if (f < max) return true;
+                    }
+                }
+            }
+            if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) {
+                if (currentVal instanceof Float f && f > 0.0f) return true;
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    private static volatile java.lang.reflect.Field itemsByIdField;
+    private static volatile boolean itemsByIdFieldResolved;
+
+    public static void registerAllDataItemOwners(Object synchedEntityData, Entity entity) {
+        try {
+            if (!itemsByIdFieldResolved) {
+                synchronized (EntityMethodHooks.class) {
+                    if (!itemsByIdFieldResolved) {
+                        for (java.lang.reflect.Field f : net.minecraft.network.syncher.SynchedEntityData.class.getDeclaredFields()) {
+                            if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                            Class<?> ft = f.getType();
+                            if (ft.isArray() || ft.getName().contains("Int2Object")) {
+                                f.setAccessible(true);
+                                itemsByIdField = f;
+                                break;
+                            }
+                        }
+                        itemsByIdFieldResolved = true;
+                    }
+                }
+            }
+            java.lang.reflect.Field ibf = itemsByIdField;
+            if (ibf == null) return;
+            Object items = ibf.get(synchedEntityData);
+            if (items == null) return;
+            if (items.getClass().isArray()) {
+                Object[] arr = (Object[]) items;
+                for (Object item : arr) {
+                    if (item != null) registerDataItemOwner(item, entity);
+                }
+            } else {
+                try {
+                    java.lang.reflect.Method valuesMethod = items.getClass().getMethod("values");
+                    Object values = valuesMethod.invoke(items);
+                    if (values instanceof Iterable<?> iter) {
+                        for (Object item : iter) {
+                            if (item != null) registerDataItemOwner(item, entity);
+                        }
+                    }
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
+    }
+
     @SuppressWarnings("unchecked")
     public static boolean shouldBlockSynchedDataSet(Object synchedData, Object accessor, Object value) {
         if (BYPASS.get()) return false;
@@ -1470,15 +1828,13 @@ public class EntityMethodHooks {
                 try { if (acc.getId() != LivingEntity.DATA_HEALTH_ID.getId()) return false; } catch (Exception e) { return false; }
                 if (CombatRegistry.isInImmortalSet(uuid)) {
                     LivingEntity living = (LivingEntity) entity;
-                    float max = living.getMaxHealth();
-                    if (max <= 0.0f) max = 20.0f;
+                    float max = MixinUtil.safeMaxHealth(living);
                     if (f < max) return true;
                 }
                 if (entity instanceof Player) {
                     Player player = (Player) entity;
                     if (!CombatRegistry.isInKillSet(uuid) && LALSwordItem.hasLALEquipment(player)) {
-                        float max = ((LivingEntity) entity).getMaxHealth();
-                        if (max <= 0.0f) max = 20.0f;
+                        float max = MixinUtil.safeMaxHealth((LivingEntity) entity);
                         if (f < max) return true;
                     }
                 }
@@ -1526,6 +1882,165 @@ public class EntityMethodHooks {
         return false;
     }
 
+    public static void onRenderLevelTail(Object levelRenderer) {
+        try {
+            Class<?> cls = Class.forName("jp.mikumiku.lal.entity.LALEntityRenderer");
+            cls.getMethod("renderAllFallback").invoke(null);
+        } catch (Throwable ignored) {}
+    }
+
+    public static void onGameRendererRenderLevelTail(Object gameRenderer) {
+        try {
+            Class<?> cls = Class.forName("jp.mikumiku.lal.entity.LALEntityRenderer");
+            cls.getMethod("renderAllFallback").invoke(null);
+        } catch (Throwable ignored) {}
+    }
+
+    public static void onEntityConstructed(Object obj) {
+        if (BYPASS.get()) return;
+        if (!(obj instanceof Entity)) return;
+        Entity entity = (Entity) obj;
+        try {
+            String className = entity.getClass().getName();
+            if (className.startsWith("jp.mikumiku.lal")) return;
+            if (entity instanceof Player) return;
+            UUID uuid = entity.getUUID();
+            if (uuid == null) return;
+            CONSTRUCTED_ENTITIES.put(uuid, new java.lang.ref.WeakReference<>(entity));
+            CONSTRUCTED_ENTITY_NANO.put(uuid, System.nanoTime());
+        } catch (Throwable ignored) {}
+    }
+
+    public static ConcurrentHashMap<UUID, java.lang.ref.WeakReference<Entity>> getConstructedEntities() {
+        return CONSTRUCTED_ENTITIES;
+    }
+
+    public static ConcurrentHashMap<UUID, Long> getConstructedEntityTimes() {
+        return CONSTRUCTED_ENTITY_NANO;
+    }
+
+    public static void cleanupConstructedEntities() {
+        try {
+            CONSTRUCTED_ENTITIES.entrySet().removeIf(entry -> {
+                java.lang.ref.WeakReference<Entity> ref = entry.getValue();
+                if (ref == null) return true;
+                Entity entity = ref.get();
+                if (entity == null) return true;
+                if (CombatRegistry.isDeadConfirmed(entry.getKey())) return true;
+                return false;
+            });
+            CONSTRUCTED_ENTITY_NANO.keySet().removeIf(uuid -> !CONSTRUCTED_ENTITIES.containsKey(uuid));
+        } catch (Throwable ignored) {}
+    }
+
+    public static boolean shouldBlockRevive(Object entity) {
+        if (entity == null) return false;
+        try {
+            if (entity instanceof Entity e) {
+                UUID uuid = e.getUUID();
+                if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) return true;
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    public static boolean shouldBlockReviveCaps(Object entity) {
+        return shouldBlockRevive(entity);
+    }
+
+    public static boolean shouldBlockCheckDespawn(Object obj) {
+        recordHookCall();
+        if (BYPASS.get()) return false;
+        if (!(obj instanceof Entity)) return false;
+        try {
+            Entity entity = (Entity) obj;
+            if (CombatRegistry.isInImmortalSet(entity)) return true;
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    public static boolean shouldBlockRemoveWhenFarAway(Object obj) {
+        recordHookCall();
+        if (BYPASS.get()) return false;
+        if (!(obj instanceof Entity)) return false;
+        try {
+            Entity entity = (Entity) obj;
+            if (CombatRegistry.isInImmortalSet(entity)) return true;
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    public static boolean replaceRemoveWhenFarAway(Object obj) {
+        return false;
+    }
+
+    public static boolean shouldBlockShouldDespawnInPeaceful(Object obj) {
+        recordHookCall();
+        if (BYPASS.get()) return false;
+        if (!(obj instanceof Entity)) return false;
+        try {
+            Entity entity = (Entity) obj;
+            if (CombatRegistry.isInImmortalSet(entity)) return true;
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    public static boolean replaceShouldDespawnInPeaceful(Object obj) {
+        return false;
+    }
+
+    public static boolean shouldBlockIsPersistenceRequired(Object obj) {
+        recordHookCall();
+        if (BYPASS.get()) return false;
+        if (!(obj instanceof Entity)) return false;
+        try {
+            Entity entity = (Entity) obj;
+            if (CombatRegistry.isInImmortalSet(entity)) return true;
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    public static boolean replaceIsPersistenceRequired(Object obj) {
+        return true;
+    }
+
+    private static final ConcurrentHashMap<UUID, Entity> STRONG_TRACKED = new ConcurrentHashMap<>();
+
+    public static void addToStrongTracked(UUID uuid, Entity entity) {
+        if (uuid != null && entity != null) STRONG_TRACKED.put(uuid, entity);
+    }
+
+    public static void removeFromStrongTracked(UUID uuid) {
+        if (uuid != null) STRONG_TRACKED.remove(uuid);
+    }
+
+    public static ConcurrentHashMap<UUID, Entity> getStrongTracked() {
+        return STRONG_TRACKED;
+    }
+
+    public static void processStrongTracked() {
+        for (java.util.Map.Entry<UUID, Entity> entry : STRONG_TRACKED.entrySet()) {
+            UUID uuid = entry.getKey();
+            Entity entity = entry.getValue();
+            if (entity == null) {
+                STRONG_TRACKED.remove(uuid);
+                continue;
+            }
+            try {
+                if (CombatRegistry.isDeadConfirmed(uuid)) {
+                    STRONG_TRACKED.remove(uuid);
+                    continue;
+                }
+                if (CombatRegistry.isInKillSet(uuid)) {
+                    if (entity instanceof LivingEntity living) {
+                        jp.mikumiku.lal.enforcement.KillEnforcer.enforceDeathState(living);
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+    }
+
+
     private static void resolveFields(Object lookup) {
         if (fieldsResolved) return;
         fieldsResolved = true;
@@ -1548,4 +2063,447 @@ public class EntityMethodHooks {
             }
         } catch (Throwable ignored) {}
     }
+
+    private static final String LAL_PKG = "jp.mikumiku.lal";
+    private static final String LAL_MOD_ID = "lal";
+
+    private static boolean lal$isCallerExternal() {
+        try {
+            StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+            for (int i = 3; i < Math.min(stack.length, 20); i++) {
+                String cn = stack[i].getClassName();
+                if (cn.startsWith(LAL_PKG)) return false;
+                if (cn.startsWith("java.") || cn.startsWith("sun.")
+                        || cn.startsWith("jdk.") || cn.startsWith("com.sun.")) continue;
+                return true;
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    public static String filterClassName(String name) {
+        if (name == null) return name;
+        if (BYPASS.get()) return name;
+        try {
+            if (name.startsWith(LAL_PKG) && lal$isCallerExternal()) {
+                return "java.lang.Object";
+            }
+        } catch (Throwable ignored) {}
+        return name;
+    }
+
+    public static StackTraceElement[] filterLALFrames(StackTraceElement[] frames) {
+        if (frames == null) return frames;
+        if (BYPASS.get()) return frames;
+        try {
+            if (!lal$isCallerExternal()) return frames;
+            int count = 0;
+            for (StackTraceElement f : frames) {
+                if (!f.getClassName().startsWith(LAL_PKG)) count++;
+            }
+            if (count == frames.length) return frames;
+            StackTraceElement[] filtered = new StackTraceElement[count];
+            int idx = 0;
+            for (StackTraceElement f : frames) {
+                if (!f.getClassName().startsWith(LAL_PKG)) filtered[idx++] = f;
+            }
+            return filtered;
+        } catch (Throwable ignored) {}
+        return frames;
+    }
+
+    public static boolean shouldHideModId(Object modId) {
+        if (BYPASS.get()) return false;
+        try {
+            if (!(modId instanceof String s)) return false;
+            if (!LAL_MOD_ID.equals(s)) return false;
+            return lal$isCallerExternal();
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Object filterModList(Object list) {
+        if (BYPASS.get()) return list;
+        try {
+            if (!lal$isCallerExternal()) return list;
+            if (!(list instanceof java.util.List<?> l)) return list;
+            java.util.List<Object> filtered = new ArrayList<>();
+            for (Object obj : l) {
+                try {
+                    java.lang.reflect.Method getModId = obj.getClass().getMethod("getModId");
+                    String modId = (String) getModId.invoke(obj);
+                    if (LAL_MOD_ID.equals(modId)) continue;
+                } catch (Throwable ignored) {}
+                filtered.add(obj);
+            }
+            return filtered;
+        } catch (Throwable ignored) {}
+        return list;
+    }
+
+    public static Class<?>[] filterLALClasses(Class<?>[] classes) {
+        if (classes == null) return classes;
+        if (BYPASS.get()) return classes;
+        try {
+            if (!lal$isCallerExternal()) return classes;
+            int count = 0;
+            for (Class<?> c : classes) {
+                try {
+                    if (!c.getName().startsWith(LAL_PKG)) count++;
+                } catch (Throwable ignored) { count++; }
+            }
+            if (count == classes.length) return classes;
+            Class<?>[] filtered = new Class<?>[count];
+            int idx = 0;
+            for (Class<?> c : classes) {
+                try {
+                    if (!c.getName().startsWith(LAL_PKG)) filtered[idx++] = c;
+                } catch (Throwable ignored) {
+                    if (idx < filtered.length) filtered[idx++] = c;
+                }
+            }
+            return filtered;
+        } catch (Throwable ignored) {}
+        return classes;
+    }
+
+    private static final ConcurrentHashMap<String, Long> KILL_SIGNATURES = new ConcurrentHashMap<>();
+    private static final long KILL_SIGNATURE_EXPIRY_NS = 2_000_000_000L;
+    private static final Set<String> KILLED_ENTITY_CLASSES = ConcurrentHashMap.newKeySet();
+
+    public static void recordKillSignature(Entity entity) {
+        try {
+            String className = entity.getClass().getName();
+            if (className.startsWith("net.minecraft.") || className.startsWith("com.mojang.")) return;
+            KILLED_ENTITY_CLASSES.add(className);
+            String key = className + ":"
+                    + Math.round(entity.getX()) + ":" + Math.round(entity.getY()) + ":" + Math.round(entity.getZ());
+            KILL_SIGNATURES.put(key, System.nanoTime());
+        } catch (Throwable ignored) {}
+    }
+
+    public static boolean matchesKillSignature(Entity entity) {
+        try {
+            String className = entity.getClass().getName();
+            if (!KILLED_ENTITY_CLASSES.contains(className)) return false;
+            String key = className + ":"
+                    + Math.round(entity.getX()) + ":" + Math.round(entity.getY()) + ":" + Math.round(entity.getZ());
+            Long timestamp = KILL_SIGNATURES.get(key);
+            if (timestamp == null) return false;
+            return System.nanoTime() - timestamp < KILL_SIGNATURE_EXPIRY_NS;
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    public static void cleanupKillSignatures() {
+        try {
+            long now = System.nanoTime();
+            KILL_SIGNATURES.entrySet().removeIf(e -> now - e.getValue() > KILL_SIGNATURE_EXPIRY_NS);
+        } catch (Throwable ignored) {}
+    }
+
+    private static final ConcurrentHashMap<String, int[]> CONSTRUCTOR_FREQUENCY = new ConcurrentHashMap<>();
+    private static volatile long lastFrequencyResetNano = System.nanoTime();
+    private static final long FREQUENCY_WINDOW_NS = 2_000_000_000L;
+    private static final int MAX_CONSTRUCTIONS_PER_WINDOW = 100;
+
+    public static boolean isConstructionRateLimited(Entity entity) {
+        try {
+            String className = entity.getClass().getName();
+            if (!KILLED_ENTITY_CLASSES.contains(className)) return false;
+            long now = System.nanoTime();
+            if (now - lastFrequencyResetNano > FREQUENCY_WINDOW_NS) {
+                CONSTRUCTOR_FREQUENCY.clear();
+                lastFrequencyResetNano = now;
+            }
+            int[] count = CONSTRUCTOR_FREQUENCY.computeIfAbsent(className, k -> new int[]{0});
+            return ++count[0] > MAX_CONSTRUCTIONS_PER_WINDOW;
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    private static volatile java.lang.reflect.Method safeGetEntityMethod;
+    private static volatile java.lang.reflect.Method safeGetAllEntitiesMethod;
+    private static volatile java.lang.reflect.Method safeGetEntityByUuidMethod;
+    private static volatile boolean helperMethodsResolved = false;
+
+    private static void resolveHelperMethods(Object level) {
+        if (helperMethodsResolved) return;
+        helperMethodsResolved = true;
+        try {
+            Class<?> slClass = level.getClass();
+            try {
+                safeGetEntityMethod = slClass.getMethod("lal$safeGetEntity",
+                        slClass, int.class);
+            } catch (Throwable ignored) {}
+            try {
+                safeGetAllEntitiesMethod = slClass.getMethod("lal$safeGetAllEntities",
+                        slClass);
+            } catch (Throwable ignored) {}
+            try {
+                safeGetEntityByUuidMethod = slClass.getMethod("lal$safeGetEntityByUuid",
+                        slClass, UUID.class);
+            } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {}
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Entity safeGetEntity(Object levelObj, int id) {
+        if (!(levelObj instanceof net.minecraft.server.level.ServerLevel)) return null;
+        net.minecraft.server.level.ServerLevel level = (net.minecraft.server.level.ServerLevel) levelObj;
+        resolveHelperMethods(level);
+        if (safeGetEntityMethod != null) {
+            try {
+                Object result = safeGetEntityMethod.invoke(null, level, id);
+                if (result instanceof Entity) return (Entity) result;
+            } catch (Throwable ignored) {}
+        }
+        try {
+            Entity e = level.getEntity(id);
+            if (e != null) return e;
+        } catch (Throwable ignored) {}
+        try {
+            for (java.util.Map.Entry<UUID, java.lang.ref.WeakReference<Entity>> entry : CONSTRUCTED_ENTITIES.entrySet()) {
+                java.lang.ref.WeakReference<Entity> ref = entry.getValue();
+                if (ref == null) continue;
+                Entity e = ref.get();
+                if (e == null) continue;
+                if (jp.mikumiku.lal.util.FieldAccessUtil.getEntityIdDirect(e) == id) return e;
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Entity safeGetEntityByUuid(Object levelObj, UUID uuid) {
+        if (uuid == null) return null;
+        if (!(levelObj instanceof net.minecraft.server.level.ServerLevel)) return null;
+        net.minecraft.server.level.ServerLevel level = (net.minecraft.server.level.ServerLevel) levelObj;
+        resolveHelperMethods(level);
+        if (safeGetEntityByUuidMethod != null) {
+            try {
+                Object result = safeGetEntityByUuidMethod.invoke(null, level, uuid);
+                if (result instanceof Entity) return (Entity) result;
+            } catch (Throwable ignored) {}
+        }
+        try {
+            Entity e = level.getEntity(uuid);
+            if (e != null) return e;
+        } catch (Throwable ignored) {}
+        try {
+            java.lang.ref.WeakReference<Entity> ref = CONSTRUCTED_ENTITIES.get(uuid);
+            if (ref != null) {
+                Entity e = ref.get();
+                if (e != null) return e;
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Iterable<Entity> safeGetAllEntities(Object levelObj) {
+        if (!(levelObj instanceof net.minecraft.server.level.ServerLevel)) return java.util.Collections.emptyList();
+        net.minecraft.server.level.ServerLevel level = (net.minecraft.server.level.ServerLevel) levelObj;
+        resolveHelperMethods(level);
+        java.util.List<Entity> result = new java.util.ArrayList<>();
+        java.util.Set<Integer> seen = new java.util.HashSet<>();
+        if (safeGetAllEntitiesMethod != null) {
+            try {
+                Object iter = safeGetAllEntitiesMethod.invoke(null, level);
+                if (iter instanceof Iterable) {
+                    for (Object obj : (Iterable<?>) iter) {
+                        if (obj instanceof Entity e) {
+                            seen.add(jp.mikumiku.lal.util.FieldAccessUtil.getEntityIdDirect(e));
+                            result.add(e);
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+        if (result.isEmpty()) {
+            try {
+                for (Entity e : level.getAllEntities()) {
+                    seen.add(jp.mikumiku.lal.util.FieldAccessUtil.getEntityIdDirect(e));
+                    result.add(e);
+                }
+            } catch (Throwable ignored) {}
+        }
+        try {
+            for (java.util.Map.Entry<UUID, java.lang.ref.WeakReference<Entity>> entry : CONSTRUCTED_ENTITIES.entrySet()) {
+                java.lang.ref.WeakReference<Entity> ref = entry.getValue();
+                if (ref == null) continue;
+                Entity e = ref.get();
+                if (e == null) continue;
+                int eid = jp.mikumiku.lal.util.FieldAccessUtil.getEntityIdDirect(e);
+                if (!seen.contains(eid)) {
+                    result.add(e);
+                }
+            }
+        } catch (Throwable ignored) {}
+        return result;
+    }
+
+    public static void onServerStopping(Object server) {
+        try {
+            jp.mikumiku.lal.entity.LALEntityManager.onServerStoppingDirect();
+        } catch (Throwable ignored) {}
+    }
+
+    public static void onPlayerJoined(Object playerListOrSelf, Object player) {
+        if (!(player instanceof ServerPlayer sp)) return;
+        try { jp.mikumiku.lal.network.LALNetwork.sendKeyToPlayer(sp); } catch (Throwable ignored) {}
+        try { jp.mikumiku.lal.entity.LALEntityManager.onPlayerLoginDirect(sp); } catch (Throwable ignored) {}
+    }
+
+    public static void onPlayerDisconnect(Object playerOrListener) {
+        ServerPlayer sp = null;
+        if (playerOrListener instanceof ServerPlayer) {
+            sp = (ServerPlayer) playerOrListener;
+        } else {
+            try {
+                java.lang.reflect.Field f = null;
+                for (String name : new String[]{"player", "f_9743_"}) {
+                    try {
+                        f = playerOrListener.getClass().getDeclaredField(name);
+                        break;
+                    } catch (NoSuchFieldException ignored) {}
+                }
+                if (f != null) {
+                    f.setAccessible(true);
+                    Object val = f.get(playerOrListener);
+                    if (val instanceof ServerPlayer) sp = (ServerPlayer) val;
+                }
+            } catch (Throwable ignored) {}
+        }
+        if (sp == null) return;
+        try { CombatRegistry.removeFromImmortalSet(sp.getUUID()); } catch (Throwable ignored) {}
+        try { jp.mikumiku.lal.entity.LALEntityManager.onPlayerLogoutDirect(sp); } catch (Throwable ignored) {}
+    }
+
+    public static void onServerPlayerTick(Object player) {
+        if (!(player instanceof ServerPlayer sp)) return;
+        try { jp.mikumiku.lal.item.LALArmorItem.checkAndRemoveImmortality(sp); } catch (Throwable ignored) {}
+    }
+
+    public static void onEntityAddedToLevel(Object level, Object entity) {
+        if (BYPASS.get()) return;
+        if (!(entity instanceof Entity e)) return;
+        if (!(level instanceof ServerLevel sl)) return;
+        try {
+            UUID uuid = e.getUUID();
+            if (CombatRegistry.isDeadConfirmed(uuid) && entity instanceof LivingEntity living) {
+                if (!(entity instanceof ServerPlayer)) {
+                    CombatRegistry.addToKillSet(uuid);
+                    jp.mikumiku.lal.enforcement.KillEnforcer.executeKill(living, sl);
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    public static void onArrowHitEntity(Object arrow, Object hitResult) {
+        if (!(arrow instanceof net.minecraft.world.entity.projectile.AbstractArrow aa)) return;
+        if (aa.getBaseDamage() < 2.0E9) return;
+        if (!(hitResult instanceof net.minecraft.world.phys.EntityHitResult ehr)) return;
+        Entity target = ehr.getEntity();
+        if (!(target instanceof LivingEntity living)) return;
+        try {
+            setBypass(true);
+            try {
+                living.hurt(aa.damageSources().arrow(aa, aa.getOwner()), (float) aa.getBaseDamage());
+            } finally {
+                setBypass(false);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    public static boolean shouldBlockExit() {
+        if (BYPASS.get()) return false;
+        try {
+            StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+            for (StackTraceElement ste : stack) {
+                if (ste.getClassName().startsWith("jp.mikumiku.lal.")) return false;
+            }
+        } catch (Throwable ignored) {
+            return false;
+        }
+        return true;
+    }
+
+    public static boolean shouldBlockInteract(Object obj) {
+        recordHookCall();
+        if (BYPASS.get()) return false;
+        if (!(obj instanceof Entity)) return false;
+        try {
+            Entity entity = (Entity) obj;
+            UUID uuid = entity.getUUID();
+            if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) return true;
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    public static net.minecraft.world.InteractionResult replaceInteractFail(Object obj) {
+        return net.minecraft.world.InteractionResult.FAIL;
+    }
+
+    public static boolean shouldBlockHeal(Object obj) {
+        recordHookCall();
+        if (BYPASS.get()) return false;
+        if (!(obj instanceof Entity)) return false;
+        try {
+            Entity entity = (Entity) obj;
+            if (CombatRegistry.isInKillSet(entity) || CombatRegistry.isDeadConfirmed(entity.getUUID())) return true;
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    public static boolean shouldBlockAddEffect(Object obj, Object effect) {
+        recordHookCall();
+        if (BYPASS.get()) return false;
+        if (!(obj instanceof Entity)) return false;
+        try {
+            Entity entity = (Entity) obj;
+            UUID uuid = entity.getUUID();
+            if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) return true;
+            if (CombatRegistry.isInImmortalSet(entity)) {
+                if (effect instanceof net.minecraft.world.effect.MobEffectInstance mei) {
+                    try {
+                        if (mei.getEffect().getCategory() == net.minecraft.world.effect.MobEffectCategory.HARMFUL) return true;
+                    } catch (Throwable ignored) {}
+                }
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    public static boolean replaceAddEffectFalse(Object obj) {
+        return false;
+    }
+
+    public static boolean shouldBlockSetAbsorptionAmount(Object obj) {
+        recordHookCall();
+        if (BYPASS.get()) return false;
+        if (!(obj instanceof Entity)) return false;
+        try {
+            Entity entity = (Entity) obj;
+            UUID uuid = entity.getUUID();
+            if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) return true;
+            if (CombatRegistry.isInImmortalSet(entity)) return true;
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    public static boolean shouldBlockSetInvulnerable(Object obj) {
+        recordHookCall();
+        if (BYPASS.get()) return false;
+        if (!(obj instanceof Entity)) return false;
+        try {
+            Entity entity = (Entity) obj;
+            UUID uuid = entity.getUUID();
+            if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) return true;
+            if (CombatRegistry.isInImmortalSet(entity)) return true;
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
 }

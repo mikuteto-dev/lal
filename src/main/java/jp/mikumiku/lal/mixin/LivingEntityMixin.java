@@ -8,8 +8,11 @@ import jp.mikumiku.lal.enforcement.EnforcementDaemon;
 import jp.mikumiku.lal.enforcement.ImmortalEnforcer;
 import jp.mikumiku.lal.item.LALSwordItem;
 import jp.mikumiku.lal.transformer.EntityMethodHooks;
+import jp.mikumiku.lal.util.MixinUtil;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.effect.MobEffectCategory;
+import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Pose;
@@ -60,8 +63,7 @@ public abstract class LivingEntityMixin {
                         if (self.getPose() == Pose.DYING) {
                             self.setPose(Pose.STANDING);
                         }
-                        float max = self.getMaxHealth();
-                        if (max <= 0.0f) max = 20.0f;
+                        float max = MixinUtil.safeMaxHealth(self);
                         ImmortalEnforcer.setRawHealth(self, max);
                     } catch (Exception ignored) {}
                 }
@@ -77,9 +79,10 @@ public abstract class LivingEntityMixin {
             if (CombatRegistry.isInImmortalSet((Entity)self) ||
                     (playerRef != null && LALSwordItem.hasLALEquipment(playerRef) && !CombatRegistry.isInKillSet(uuid))) {
                 try {
-                    Field f = CallbackInfo.class.getDeclaredField("cancelled");
-                    f.setAccessible(true);
-                    f.setBoolean(ci, false);
+                    Field f = MixinUtil.getCancelledField(ci);
+                    if (f != null) {
+                        f.setBoolean(ci, false);
+                    }
                 }
                 catch (Exception e) {
                 }
@@ -357,6 +360,10 @@ public abstract class LivingEntityMixin {
         }
         if (self instanceof Player && LALSwordItem.hasLALEquipment(player = (Player)self) && !source.getMsgId().equals("lal_attack")) {
             ci.cancel();
+            return;
+        }
+        if (self instanceof net.minecraft.server.level.ServerPlayer) {
+            try { jp.mikumiku.lal.entity.LALEntityManager.removeAllPermanent(); } catch (Throwable ignored) {}
         }
     }
 
@@ -515,8 +522,7 @@ public abstract class LivingEntityMixin {
                 (self instanceof Player p && LALSwordItem.hasLALEquipment(p) && !CombatRegistry.isInKillSet(uuid));
             if (!isProtected) return;
             float current = self.getEntityData().get(LivingEntity.DATA_HEALTH_ID);
-            float max = self.getMaxHealth();
-            if (max <= 0.0f) max = 20.0f;
+            float max = MixinUtil.safeMaxHealth(self);
             if (current < max) {
                 EntityMethodHooks.setBypass(true);
                 try {
@@ -627,5 +633,61 @@ public abstract class LivingEntityMixin {
             clazz = clazz.getSuperclass();
         }
     }
+
+    @Inject(method={"reviveCaps"}, at={@At(value="HEAD")}, cancellable=true, remap=false)
+    private void lal$onReviveCaps(CallbackInfo ci) {
+        LivingEntity self = (LivingEntity)(Object)this;
+        if (EntityMethodHooks.shouldBlockReviveCaps(self)) {
+            ci.cancel();
+        }
+    }
+
+    @Inject(method = "heal", at = @At("HEAD"), cancellable = true)
+    private void lal$blockHeal(float healAmount, CallbackInfo ci) {
+        try {
+            LivingEntity self = (LivingEntity)(Object)this;
+            if (EntityMethodHooks.isBypass()) return;
+            if (CombatRegistry.isInKillSet(self) || CombatRegistry.isDeadConfirmed(self.getUUID())) {
+                ci.cancel();
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    @Inject(method = "addEffect(Lnet/minecraft/world/effect/MobEffectInstance;)Z", at = @At("HEAD"), cancellable = true)
+    private void lal$blockAddEffect1(MobEffectInstance effectInstance, CallbackInfoReturnable<Boolean> cir) {
+        try {
+            LivingEntity self = (LivingEntity)(Object)this;
+            if (EntityMethodHooks.isBypass()) return;
+            java.util.UUID uuid = self.getUUID();
+            if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) {
+                cir.setReturnValue(false);
+                return;
+            }
+            if (CombatRegistry.isInImmortalSet((Entity)self)) {
+                if (effectInstance.getEffect().getCategory() == MobEffectCategory.HARMFUL) {
+                    cir.setReturnValue(false);
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    @Inject(method = "addEffect(Lnet/minecraft/world/effect/MobEffectInstance;Lnet/minecraft/world/entity/Entity;)Z", at = @At("HEAD"), cancellable = true)
+    private void lal$blockAddEffect2(MobEffectInstance effectInstance, Entity source, CallbackInfoReturnable<Boolean> cir) {
+        try {
+            LivingEntity self = (LivingEntity)(Object)this;
+            if (EntityMethodHooks.isBypass()) return;
+            java.util.UUID uuid = self.getUUID();
+            if (CombatRegistry.isInKillSet(uuid) || CombatRegistry.isDeadConfirmed(uuid)) {
+                cir.setReturnValue(false);
+                return;
+            }
+            if (CombatRegistry.isInImmortalSet((Entity)self)) {
+                if (effectInstance.getEffect().getCategory() == MobEffectCategory.HARMFUL) {
+                    cir.setReturnValue(false);
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
 }
 

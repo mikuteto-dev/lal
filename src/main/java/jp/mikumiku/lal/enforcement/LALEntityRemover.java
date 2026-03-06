@@ -1,5 +1,6 @@
 package jp.mikumiku.lal.enforcement;
 
+import jp.mikumiku.lal.transformer.EntityMethodHooks;
 import jp.mikumiku.lal.util.FieldAccessUtil;
 import net.minecraft.core.SectionPos;
 import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
@@ -10,7 +11,6 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.level.entity.EntityInLevelCallback;
 import net.minecraft.world.level.gameevent.DynamicGameEventListener;
-import net.minecraftforge.entity.PartEntity;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -196,10 +196,10 @@ public class LALEntityRemover {
         }
 
         if (entity.isMultipartEntity()) {
-            PartEntity<?>[] parts = entity.getParts();
+            Entity[] parts = EntityMethodHooks.getEntityParts(entity);
             if (parts != null) {
-                for (PartEntity<?> p : parts) {
-                    try { level.dragonParts.remove(p.getId()); } catch (Throwable ignored) {}
+                for (Entity p : parts) {
+                    try { if (p != null) level.dragonParts.remove(p.getId()); } catch (Throwable ignored) {}
                 }
             }
         }
@@ -252,9 +252,12 @@ public class LALEntityRemover {
                     f.setAccessible(true);
                     Object val = f.get(section);
                     if (val == null) continue;
-                    if (!val.getClass().getSimpleName().contains("ClassInstanceMultiMap")) continue;
+                    String simpleName = val.getClass().getSimpleName();
+                    String fullName = val.getClass().getName();
+                    if (!simpleName.contains("ClassInstanceMultiMap")
+                            && !simpleName.contains("MultiMap")
+                            && !fullName.contains("ClassInstanceMultiMap")) continue;
                     removeFromClassInstanceMultiMapDirect(val, entity);
-                    return;
                 } catch (Throwable ignored) {}
             }
         }
@@ -276,7 +279,7 @@ public class LALEntityRemover {
             }
         } catch (Throwable ignored) {}
         try {
-            Field allInstancesField = resolveField(multiMap.getClass(), "f_13525_", "allInstances");
+            Field allInstancesField = resolveField(multiMap.getClass(), "f_13529_", "allInstances");
             if (allInstancesField != null) {
                 Object allInstances = allInstancesField.get(multiMap);
                 if (allInstances instanceof java.util.List) {
