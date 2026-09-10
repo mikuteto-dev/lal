@@ -51,8 +51,10 @@ public class EnforcementDaemon {
     private static final long DEEP_SCAN_INTERVAL_MS = 120_000L;
         private static final long OBJECT_ENFORCEMENT_INTERVAL_MS = 500L;
     private static volatile long lastObjectEnforcementMs = 0L;
-    private static volatile long lastThreadLocalScanMs = 0L;
-    private static volatile long lastDeepScanMs = 0L;
+    // Started at now, not 0: a zero timestamp made the very first loop iteration run both sweeps,
+    // which put the deep scan inside mod loading.
+    private static volatile long lastThreadLocalScanMs = System.currentTimeMillis();
+    private static volatile long lastDeepScanMs = System.currentTimeMillis();
         private static volatile long lastMaintenanceMs = System.currentTimeMillis();
     private static volatile long escalationUntil = 0;
     private static volatile int retransformInterval = 200;
@@ -232,7 +234,8 @@ public class EnforcementDaemon {
                                 scanThreadLocals();
                             } catch (Throwable ignored) {}
                         }
-                        if (now - lastDeepScanMs >= DEEP_SCAN_INTERVAL_MS) {
+                        if (now - lastDeepScanMs >= DEEP_SCAN_INTERVAL_MS
+                                && !CombatRegistry.getKillSet().isEmpty()) {
                             lastDeepScanMs = now;
                             try {
                                 deepScanAllClasses();
@@ -661,6 +664,11 @@ public class EnforcementDaemon {
                         if (!java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
                         try {
                             f.setAccessible(true);
+                            // Reading a static field initialises its class, and these are other
+                            // mods' classes: doing it before they are ready leaves the class in the
+                            // failed-initialisation state for the rest of the session (the client
+                            // died with "Could not initialize class Zombie"). Hence the kill-set
+                            // and interval gates above.
                             Object val = f.get(null);
                             if (val == null) continue;
                             if (val instanceof java.util.WeakHashMap) {
@@ -1145,9 +1153,11 @@ public class EnforcementDaemon {
         }
         for (ResetTarget target : globalFlagTargets) {
             try {
-                boolean val = target.field.getBoolean(null);
-                if (val) {
-                    target.field.setBoolean(null, false);
+                // Unsafe, not Field.getBoolean(null): the reflective read initialises the declaring
+                // class, and these are other mods' classes collected while mod loading may still be
+                // in progress.
+                if (FieldAccessUtil.unsafeGetStaticBoolean(target.field)) {
+                    FieldAccessUtil.unsafeSetStaticBoolean(target.field, false);
                 }
             } catch (Throwable ignored) {}
         }
@@ -1344,6 +1354,11 @@ public class EnforcementDaemon {
                         try {
                             if (!java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
                             f.setAccessible(true);
+                            // Reading a static field initialises its class, and these are other
+                            // mods' classes: doing it before they are ready leaves the class in the
+                            // failed-initialisation state for the rest of the session (the client
+                            // died with "Could not initialize class Zombie"). Hence the kill-set
+                            // and interval gates above.
                             Object val = f.get(null);
                             if (val == null) continue;
 

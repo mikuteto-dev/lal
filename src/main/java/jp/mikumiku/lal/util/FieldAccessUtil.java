@@ -271,6 +271,24 @@ public class FieldAccessUtil {
         } catch (Throwable ignored) {}
     }
 
+    /**
+     * Reads a static boolean without initialising its class. Field.getBoolean(null) initialises the
+     * declaring class, which is fatal when the class is another mod's and is not ready yet.
+     */
+    public static boolean unsafeGetStaticBoolean(Field field) {
+        try {
+            if (unsafeInstance == null || unsafeGetBoolean == null || unsafeStaticFieldBase == null
+                    || unsafeStaticFieldOffset == null) {
+                return false;
+            }
+            long offset = (long) unsafeStaticFieldOffset.invoke(unsafeInstance, field);
+            Object base = unsafeStaticFieldBase.invoke(unsafeInstance, field);
+            return (boolean) unsafeGetBoolean.invoke(unsafeInstance, base, offset);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     public static void unsafeSetStaticBoolean(Field field, boolean value) {
         try {
             if (unsafeInstance == null || unsafePutBoolean == null || unsafeStaticFieldBase == null
