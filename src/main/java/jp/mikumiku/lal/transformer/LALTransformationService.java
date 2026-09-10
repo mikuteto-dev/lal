@@ -7,6 +7,19 @@ import cpw.mods.modlauncher.api.ITransformer;
 import java.util.List;
 import java.util.Set;
 
+/**
+ * Not registered, and it must stay that way.
+ *
+ * <p>Forge's ModsFolderLocator filters a jar out of the mods scan when it supplied a discovered
+ * transformation service ({@code ModDirTransformerDiscoverer.allExcluded()}). Declaring this class
+ * in {@code META-INF/services/...ITransformationService} therefore stops the jar from loading as a
+ * mod at all: no @Mod class, so no items, no creative tab and no commands. It also puts the ASM
+ * hook table into ModLauncher's own class pipeline, which is where the Entity/Player
+ * ClassNotFoundErrors came from.
+ *
+ * <p>The hooks are carried by Mixin instead (lal.mixins.json), which needs no service entry.
+ * Kept as the implementation for a jar that is deliberately a transformer rather than a mod.
+ */
 public class LALTransformationService implements ITransformationService {
 
     private static volatile boolean serviceActive = false;

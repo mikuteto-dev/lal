@@ -26,7 +26,20 @@ public class DiscoveryCheck2 {
             System.out.println("  " + np.name() + " -> " + java.util.Arrays.toString(np.paths()));
             if ("cpw.mods.modlauncher.api.ITransformationService".equals(np.name())) sawTransformService = true;
         }
-        System.out.println(sawTransformService ? "RESULT: PASS" : "RESULT: FAIL (mod jar not discovered)");
-        if (!sawTransformService) System.exit(1);
+        // The real requirement is that the jar loads as a MOD. A jar that supplies a discovered
+        // transformation service is filtered out of the mods scan (ModsFolderLocator excludes
+        // ModDirTransformerDiscoverer.allExcluded()), so being discovered as a service is a
+        // failure, not a success - that is what silently removed the items and the creative tab.
+        boolean stillAMod = !ModDirTransformerDiscoverer.allExcluded().contains(installed);
+        System.out.println("excluded from the mods scan (would remove items): " + !stillAMod);
+        if (sawTransformService) {
+            System.out.println("FAIL: the jar supplies a transformation service, so Forge will not load it as a mod");
+            System.exit(1);
+        }
+        if (!stillAMod) {
+            System.out.println("FAIL: the jar is excluded from the mods scan");
+            System.exit(1);
+        }
+        System.out.println("RESULT: PASS (loaded as a mod, no transformation service claimed)");
     }
 }

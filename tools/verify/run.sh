@@ -44,6 +44,6 @@ echo "== EarlyInitCheck: no injected method is reachable from a <clinit> =="
 MCJAR=$(find "$HOME/.gradle/caches/forge_gradle" "$ROOT/build/fg_cache" -name 'forge-*_mapped_official_1.20.1.jar' 2>/dev/null | head -1)
 java -cp "$OUT:$CP" EarlyInitCheck "$MCJAR"
 
-echo "== DiscoveryCheck2: Forge's real mod-jar discovery against a simulated mods/ install =="
+echo "== DiscoveryCheck2: the jar must load as a MOD, not as a transformation service =="
 JAR=$(ls -t "$ROOT"/build/libs/lal-*.jar | grep -v no-transformer | head -1)
 java $OPENS -cp "$OUT:$CP" DiscoveryCheck2 "$JAR"
