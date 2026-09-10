@@ -11,3 +11,4 @@ tools/verify/out/
 logs/
 *.gz
 .mixin.out/
+tools/verify/tx-agent.jar

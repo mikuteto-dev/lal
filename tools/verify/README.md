@@ -16,3 +16,16 @@ jar; run it with:
 
 `DiscoveryCheck2` must print `RESULT: PASS`. If it fails, the mod is not discoverable from a plain
 install and the ASM hook table will not run.
+
+## Diagnostics (not pass/fail checks)
+
+`BootstrapMain` + `TxAgent` reproduce the client crash path in isolation: an agent applies
+`LALClassTransformer` at class load (as ModLauncher does) and then `Bootstrap.bootStrap()` runs,
+which is where the client log died. Build them with the same classpath as above and run
+
+    java -javaagent:tools/verify/tx-agent.jar -cp "tools/verify/out:$CP" BootstrapMain
+
+Note the fidelity limit: `TxAgent.NoLoadWriter` resolves the class hierarchy from class file
+resources to avoid re-entering class definition, and that approximation writes frames for some
+classes that the real verifier rejects. A VerifyError here is therefore not by itself evidence
+about the mod - use `RealClassCheck` (ASM's own resolver) for that.
