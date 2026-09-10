@@ -13,6 +13,17 @@ public class TargetCheck {
 
         // 1. Wiring: the transformation service must expose exactly the class transformer.
         var service = new jp.mikumiku.lal.transformer.LALTransformationService();
+        // The service now runs during launch, before any mod code, so its whole lifecycle must
+        // survive being called with the early-launch arguments.
+        try {
+            System.out.println("service name = " + service.name());
+            service.initialize(null);
+            service.onLoad(null, java.util.Set.of());
+            System.out.println("service lifecycle: no throw");
+        } catch (Throwable t) {
+            System.out.println("FAIL: transformation service threw during its lifecycle: " + t);
+            ok = false;
+        }
         var list = service.transformers();
         System.out.println("transformers() size = " + list.size()
                 + " -> " + (list.isEmpty() ? "NONE (hook table dead)" : list.get(0).getClass().getSimpleName()));
