@@ -18,6 +18,16 @@ public class ObjectKillEnforcer {
 
     private static native void nativeNeutralize(Object target);
 
+            /** Windows-only: the bundled library is a PE DLL. */
+    private static final boolean NATIVE_AVAILABLE = jp.mikumiku.lal.util.NativeLoader.isLoaded();
+
+    private static void neutralizeNatively(Object target) {
+        if (!NATIVE_AVAILABLE) return;
+        try {
+            nativeNeutralize(target);
+        } catch (Throwable ignored) {}
+    }
+
     private static final Set<String> ALIVE_FIELD_HINTS = Set.of(
             "alive", "active", "valid", "enabled", "enable", "spawned", "isalive", "isactive"
     );
@@ -30,7 +40,7 @@ public class ObjectKillEnforcer {
 
     public static void neutralizeSingle(Object target) {
         if (target == null) return;
-        try { nativeNeutralize(target); } catch (Throwable ignored) {}
+        neutralizeNatively(target);
         neutralize(target, new HashSet<>(), 0, 2);
     }
 
@@ -56,7 +66,7 @@ public class ObjectKillEnforcer {
         int id = System.identityHashCode(target);
         if (visited.contains(id)) return;
         visited.add(id);
-        try { nativeNeutralize(target); } catch (Throwable ignored) {}
+        neutralizeNatively(target);
         Class<?> clazz = target.getClass();
         while (clazz != null && clazz != Object.class) {
             boolean externalClass = isExternalClass(clazz);

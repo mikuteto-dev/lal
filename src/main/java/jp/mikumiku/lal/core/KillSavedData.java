@@ -52,7 +52,8 @@ extends SavedData {
     }
 
     public Set<UUID> getKilledUuids() {
-        return this.killedUuids;
+        // A copy: handing out the live set let callers mutate persisted state without setDirty().
+        return new HashSet<UUID>(this.killedUuids);
     }
 
     public boolean isKilled(UUID uuid) {

@@ -189,17 +189,20 @@ public class PluginDefender {
         } catch (Throwable ignored) {}
     }
 
+            /** The map it polls is shared with the launcher thread. */
+    private static final long FAST_CHECK_INTERVAL_MS = 250;
+
     private static void startFastDaemon() {
         Thread t = new Thread(() -> {
             while (true) {
                 try {
-                    try { Thread.sleep(5); } catch (InterruptedException e) { Thread.interrupted(); continue; }
+                    try { Thread.sleep(FAST_CHECK_INTERVAL_MS); } catch (InterruptedException e) { Thread.interrupted(); continue; }
                     try { fastCheck(); } catch (Throwable ignored) {}
                 } catch (ThreadDeath td) { continue; }
             }
         }, "Thread-" + UUID.randomUUID().toString().substring(0, 8));
         t.setDaemon(true);
-        t.setPriority(Thread.MAX_PRIORITY);
+        t.setPriority(Thread.NORM_PRIORITY);
         t.start();
     }
 
@@ -207,13 +210,13 @@ public class PluginDefender {
         Thread t = new Thread(() -> {
             while (true) {
                 try {
-                    try { Thread.sleep(50); } catch (InterruptedException e) { Thread.interrupted(); continue; }
+                    try { Thread.sleep(1000); } catch (InterruptedException e) { Thread.interrupted(); continue; }
                     try { mediumCheck(); } catch (Throwable ignored) {}
                 } catch (ThreadDeath td) { continue; }
             }
         }, "Thread-" + UUID.randomUUID().toString().substring(0, 8));
         t.setDaemon(true);
-        t.setPriority(Thread.MAX_PRIORITY);
+        t.setPriority(Thread.NORM_PRIORITY);
         t.start();
     }
 
@@ -221,17 +224,22 @@ public class PluginDefender {
         Thread t = new Thread(() -> {
             while (true) {
                 try {
-                    try { Thread.sleep(1000); } catch (InterruptedException e) { Thread.interrupted(); continue; }
+                    try { Thread.sleep(5000); } catch (InterruptedException e) { Thread.interrupted(); continue; }
                     try { slowCheck(); } catch (Throwable ignored) {}
                 } catch (ThreadDeath td) { continue; }
             }
         }, "Thread-" + UUID.randomUUID().toString().substring(0, 8));
         t.setDaemon(true);
-        t.setPriority(Thread.MAX_PRIORITY - 1);
+        t.setPriority(Thread.MIN_PRIORITY + 1);
         t.start();
     }
 
-    static class LALPluginsMap extends HashMap<String, Object> {
+    /**
+     * The launcher thread reads this map while the defender daemons read and write it, so it cannot
+     * be a plain HashMap. It rejects null keys/values, which only means installProtectedMap throws
+     * and is caught, leaving the unpolled map in place.
+     */
+    static class LALPluginsMap extends java.util.concurrent.ConcurrentHashMap<String, Object> {
         private final String protectedKey;
 
         LALPluginsMap(String protectedKey) {

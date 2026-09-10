@@ -5,11 +5,13 @@ import java.lang.reflect.Field;
 import java.util.UUID;
 import jp.mikumiku.lal.agent.LALAgent;
 import jp.mikumiku.lal.agent.LALAgentBridge;
+import jp.mikumiku.lal.transformer.EntityMethodHooks;
 
 public class DaemonWatchdog {
 
     private static volatile Thread watchdogThread = null;
     private static volatile boolean running = false;
+    private static volatile boolean shutdownHookRegistered = false;
     private static volatile int verifyIndex = 0;
     private static final Class<?>[] TARGET_CLASSES = new Class<?>[5];
     private static final int[] EXPECTED_METHOD_COUNTS = new int[5];
@@ -45,7 +47,10 @@ public class DaemonWatchdog {
             try { start(); } catch (Throwable ignored) {}
         });
         watchdogThread.start();
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> running = false));
+        if (!shutdownHookRegistered) {
+            shutdownHookRegistered = true;
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> running = false));
+        }
         saveClassBaselines();
     }
 
@@ -115,8 +120,31 @@ public class DaemonWatchdog {
         } catch (Throwable ignored) {}
     }
 
+    /**
+     * Only on evidence: a stall in the monotonic hook counter is the only observable symptom of
+     * having been unhooked. Retransformation deoptimises the target's compiled methods.
+     */
+    private static final long ROTATING_VERIFY_INTERVAL_MS = 30_000L;
+    private static volatile long lastRotatingVerifyMs = 0L;
+    private static long lastHookCallsObserved = -1L;
+    private static int stalledHookObservations = 0;
+
     private static void rotatingBytecodeVerify() {
         try {
+            long now = System.currentTimeMillis();
+            if (now - lastRotatingVerifyMs < ROTATING_VERIFY_INTERVAL_MS) return;
+            lastRotatingVerifyMs = now;
+
+            long calls = EntityMethodHooks.getTotalHookCalls();
+            if (calls != lastHookCallsObserved) {
+                lastHookCallsObserved = calls;
+                stalledHookObservations = 0;
+                return;
+            }
+            stalledHookObservations++;
+            // An idle server legitimately stops calling hooks, so require two quiet intervals.
+            if (stalledHookObservations < 2) return;
+
             Instrumentation inst = LALAgentBridge.getInstrumentation();
             if (inst == null) return;
             int idx = verifyIndex % TARGET_CLASSES.length;
@@ -127,8 +155,18 @@ public class DaemonWatchdog {
         } catch (Throwable ignored) {}
     }
 
+    /**
+     * The transformer list only changes when something deliberately removes it, so this is not worth
+     * a Class.forName walk 10 times a second.
+     */
+    private static final long TRANSFORMER_CHECK_INTERVAL_MS = 30_000L;
+    private static volatile long lastTransformerCheckMs = 0L;
+
     private static void restoreTransformerIfNeeded() {
         try {
+            long now = System.currentTimeMillis();
+            if (now - lastTransformerCheckMs < TRANSFORMER_CHECK_INTERVAL_MS) return;
+            lastTransformerCheckMs = now;
             Instrumentation inst = LALAgentBridge.getInstrumentation();
             if (inst == null) return;
             Class<?> transformerManagerClass = null;

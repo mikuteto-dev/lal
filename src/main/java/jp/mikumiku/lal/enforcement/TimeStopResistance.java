@@ -5,7 +5,6 @@ import jp.mikumiku.lal.item.LALSwordItem;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
-import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.entity.living.LivingAttackEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.living.LivingHurtEvent;
@@ -16,14 +15,10 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 
 public class TimeStopResistance {
 
-    public static void registerEventHandlers() {
-        MinecraftForge.EVENT_BUS.register(EventHandlers.class);
-    }
-
     public static class EventHandlers {
 
         @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-        public static void onAttack(AttackEntityEvent event) {
+        public void onAttack(AttackEntityEvent event) {
             try {
                 if (!event.isCanceled()) return;
                 Player player = event.getEntity();
@@ -35,27 +30,27 @@ public class TimeStopResistance {
         }
 
         @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-        public static void onInteractEntity(PlayerInteractEvent.EntityInteract event) {
+        public void onInteractEntity(PlayerInteractEvent.EntityInteract event) {
             uncancelIfProtected(event);
         }
 
         @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-        public static void onInteractSpecific(PlayerInteractEvent.EntityInteractSpecific event) {
+        public void onInteractSpecific(PlayerInteractEvent.EntityInteractSpecific event) {
             uncancelIfProtected(event);
         }
 
         @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-        public static void onRightClickBlock(PlayerInteractEvent.RightClickBlock event) {
+        public void onRightClickBlock(PlayerInteractEvent.RightClickBlock event) {
             uncancelIfProtected(event);
         }
 
         @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-        public static void onRightClickItem(PlayerInteractEvent.RightClickItem event) {
+        public void onRightClickItem(PlayerInteractEvent.RightClickItem event) {
             uncancelIfProtected(event);
         }
 
         @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-        public static void onLeftClickBlock(PlayerInteractEvent.LeftClickBlock event) {
+        public void onLeftClickBlock(PlayerInteractEvent.LeftClickBlock event) {
             uncancelIfProtected(event);
         }
 
@@ -71,7 +66,7 @@ public class TimeStopResistance {
         }
 
         @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-        public static void onLivingAttack(LivingAttackEvent event) {
+        public void onLivingAttack(LivingAttackEvent event) {
             try {
                 LivingEntity entity = event.getEntity();
                 if (!CombatRegistry.isInImmortalSet((Entity) entity)) return;
@@ -83,7 +78,7 @@ public class TimeStopResistance {
         }
 
         @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-        public static void onLivingHurt(LivingHurtEvent event) {
+        public void onLivingHurt(LivingHurtEvent event) {
             try {
                 LivingEntity entity = event.getEntity();
                 if (!CombatRegistry.isInImmortalSet((Entity) entity)) return;
@@ -93,7 +88,7 @@ public class TimeStopResistance {
         }
 
         @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-        public static void onLivingDeath(LivingDeathEvent event) {
+        public void onLivingDeath(LivingDeathEvent event) {
             try {
                 LivingEntity entity = event.getEntity();
                 if (!CombatRegistry.isInImmortalSet((Entity) entity)) return;

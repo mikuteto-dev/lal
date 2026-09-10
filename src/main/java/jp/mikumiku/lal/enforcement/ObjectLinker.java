@@ -130,16 +130,39 @@ public class ObjectLinker {
         }
     }
 
+    /**
+     * One snapshot: getAllLoadedClasses materialises a fresh array of every loaded class, and
+     * scanAndRegister asked three times.
+     */
+    private static final long LOADED_CLASSES_TTL_MS = 10_000L;
+    private static volatile Class<?>[] loadedClassesCache;
+    private static volatile long loadedClassesAtMs = 0L;
+
+    private static Class<?>[] loadedClasses() {
+        Class<?>[] cached = loadedClassesCache;
+        long now = System.currentTimeMillis();
+        if (cached != null && now - loadedClassesAtMs < LOADED_CLASSES_TTL_MS) {
+            return cached;
+        }
+        try {
+            Instrumentation inst = LALAgentBridge.getInstrumentation();
+            if (inst != null) {
+                Class<?>[] all = inst.getAllLoadedClasses();
+                loadedClassesCache = all;
+                loadedClassesAtMs = now;
+                return all;
+            }
+        } catch (Throwable ignored) {}
+        return cached != null ? cached : new Class<?>[0];
+    }
+
     private static Set<Class<?>> collectAllModClasses(String packagePrefix, Class<?> entityClass) {
         Set<Class<?>> classes = new HashSet<>();
         classes.add(entityClass);
         try {
-            Instrumentation inst = LALAgentBridge.getInstrumentation();
-            if (inst != null) {
-                for (Class<?> clazz : inst.getAllLoadedClasses()) {
-                    if (clazz.getName().startsWith(packagePrefix)) {
-                        classes.add(clazz);
-                    }
+            for (Class<?> clazz : loadedClasses()) {
+                if (clazz.getName().startsWith(packagePrefix)) {
+                    classes.add(clazz);
                 }
             }
         } catch (Throwable ignored) {}
@@ -282,9 +305,7 @@ public class ObjectLinker {
 
     private static void scanLoadedClassesInPackage(String targetPackage, List<Object> results, Set<Integer> visited) {
         try {
-            Instrumentation inst = LALAgentBridge.getInstrumentation();
-            if (inst == null) return;
-            Class<?>[] loaded = inst.getAllLoadedClasses();
+            Class<?>[] loaded = loadedClasses();
             for (Class<?> clazz : loaded) {
                 try {
                     String name = clazz.getName();
@@ -388,9 +409,7 @@ public class ObjectLinker {
         Set<Integer> targetIds = new HashSet<>();
         for (Object obj : targets) targetIds.add(System.identityHashCode(obj));
         try {
-            Instrumentation inst = LALAgentBridge.getInstrumentation();
-            if (inst == null) return;
-            Class<?>[] loaded = inst.getAllLoadedClasses();
+            Class<?>[] loaded = loadedClasses();
             for (Class<?> clazz : loaded) {
                 if (!clazz.getName().startsWith(targetPackage)) continue;
                 try {
@@ -904,17 +923,25 @@ public class ObjectLinker {
         return unsafeInstance;
     }
 
-    private static final Map<Class<?>, Field[]> FIELDS_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
     private static final Field[] EMPTY_FIELDS = new Field[0];
-
-    private static Field[] safeGetDeclaredFields(Class<?> clazz) {
-        return FIELDS_CACHE.computeIfAbsent(clazz, c -> {
+    // ClassValue, not a Class-keyed map, so reflected-on classes can still be unloaded.
+    private static final ClassValue<Field[]> FIELDS_CACHE = new ClassValue<>() {
+        @Override
+        protected Field[] computeValue(Class<?> type) {
             try {
-                return c.getDeclaredFields();
+                return type.getDeclaredFields();
             } catch (Throwable t) {
                 return EMPTY_FIELDS;
             }
-        });
+        }
+    };
+
+    private static Field[] safeGetDeclaredFields(Class<?> clazz) {
+        try {
+            return FIELDS_CACHE.get(clazz);
+        } catch (Throwable t) {
+            return EMPTY_FIELDS;
+        }
     }
 
     private static void corruptPackageSecurityFields(Set<Class<?>> classes) {

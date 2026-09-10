@@ -19,7 +19,17 @@ import net.minecraft.world.entity.LivingEntity;
 
 public class BreakEnforcer {
 
-    private static final ConcurrentHashMap<Class<?>, List<FieldTarget>> FIELD_CACHE = new ConcurrentHashMap<>();
+    // ClassValue, not a Class-keyed map, so reflected-on classes can still be unloaded.
+    private static final ClassValue<List<FieldTarget>> FIELD_CACHE = new ClassValue<>() {
+        @Override
+        protected List<FieldTarget> computeValue(Class<?> type) {
+            try {
+                return scanForHealthFields(type);
+            } catch (Throwable t) {
+                return java.util.Collections.emptyList();
+            }
+        }
+    };
 
     private static Field ITEMS_BY_ID_FIELD;
     private static boolean itemsByIdResolved = false;
@@ -133,11 +143,11 @@ public class BreakEnforcer {
     private static void enforceIndependentHealthFields(LivingEntity entity, float healthCap) {
         try {
             Class<?> clazz = entity.getClass();
-            List<FieldTarget> targets = FIELD_CACHE.get(clazz);
-
-            if (targets == null) {
+            List<FieldTarget> targets;
+            try {
+                targets = FIELD_CACHE.get(clazz);
+            } catch (Throwable t) {
                 targets = scanForHealthFields(clazz);
-                FIELD_CACHE.put(clazz, targets);
             }
 
             for (FieldTarget target : targets) {
@@ -311,25 +321,36 @@ public class BreakEnforcer {
         } catch (Throwable ignored) {}
     }
 
-    private static final ConcurrentHashMap<String, Field> DATA_ITEM_FIELD_CACHE = new ConcurrentHashMap<>();
+    private static final ClassValue<ConcurrentHashMap<String, Field>> DATA_ITEM_FIELD_CACHE =
+            new ClassValue<>() {
+                @Override
+                protected ConcurrentHashMap<String, Field> computeValue(Class<?> type) {
+                    return new ConcurrentHashMap<>();
+                }
+            };
 
     private static Field findDataItemField(Class<?> clazz, String preferredName, String typeHint) {
-        String cacheKey = clazz.getName() + ":" + preferredName;
-        Field cached = DATA_ITEM_FIELD_CACHE.get(cacheKey);
+        ConcurrentHashMap<String, Field> cache;
+        try {
+            cache = DATA_ITEM_FIELD_CACHE.get(clazz);
+        } catch (Throwable t) {
+            cache = new ConcurrentHashMap<>();
+        }
+        Field cached = cache.get(preferredName);
         if (cached != null) return cached;
 
         for (Class<?> c = clazz; c != null && c != Object.class; c = c.getSuperclass()) {
             try {
                 Field f = c.getDeclaredField(preferredName);
                 f.setAccessible(true);
-                DATA_ITEM_FIELD_CACHE.put(cacheKey, f);
+                cache.put(preferredName, f);
                 return f;
             } catch (Throwable ignored) {}
             for (Field f : FieldAccessUtil.safeGetDeclaredFields(c)) {
                 if (f.getType().getSimpleName().contains(typeHint)) {
                     try {
                         f.setAccessible(true);
-                        DATA_ITEM_FIELD_CACHE.put(cacheKey, f);
+                        cache.put(preferredName, f);
                         return f;
                     } catch (Throwable ignored) {}
                 }

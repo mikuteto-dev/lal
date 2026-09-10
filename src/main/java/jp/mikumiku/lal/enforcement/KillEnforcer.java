@@ -386,7 +386,18 @@ public class KillEnforcer {
         return vhHealth0 && vhDead && methodSaysAlive;
     }
 
+    /**
+     * The tail is unwrapped reflection and third-party calls reached from tick/attack hooks, so an
+     * escaping exception would abort the server tick.
+     */
     public static void forceKill(LivingEntity target, ServerLevel level, @Nullable Entity attacker) {
+        try {
+            forceKillUnchecked(target, level, attacker);
+        } catch (Throwable t) {
+        }
+    }
+
+    private static void forceKillUnchecked(LivingEntity target, ServerLevel level, @Nullable Entity attacker) {
         try {
             if (target.getEntityData() == null) return;
         } catch (Throwable ignored) { return; }
@@ -563,9 +574,7 @@ public class KillEnforcer {
         catch (Throwable armorToughnessAttr) {
         }
         try {
-            for (int i = 0; i < 8; ++i) {
-                target.setHealth(0.0f);
-            }
+            target.setHealth(0.0f);
         }
         catch (Throwable i) {
         }
@@ -610,10 +619,6 @@ public class KillEnforcer {
         KillEnforcer.setDead(target, true);
         try {
             KillEnforcer.directWriteDataItem(target.getEntityData(), LivingEntity.DATA_HEALTH_ID, Float.valueOf(0.0f));
-        }
-        catch (Throwable dieBodyRan) {
-        }
-        try {
         }
         catch (Throwable dieBodyRan) {
         }
@@ -884,12 +889,14 @@ public class KillEnforcer {
                         Class<?> type = f.getType();
                         if (type == Float.TYPE) {
                             if (clazz == LivingEntity.class || clazz == Entity.class) continue;
-                            f.setFloat(target, Float.MIN_VALUE);
+                            // Exact zero: Float.MIN_VALUE is the smallest *positive* denormal, so it
+                            // fails every "health <= 0" test and feeds denormals downstream.
+                            f.setFloat(target, 0.0f);
                             continue;
                         }
                         if (type == Double.TYPE) {
                             if (clazz == LivingEntity.class || clazz == Entity.class) continue;
-                            f.setDouble(target, Double.MIN_VALUE);
+                            f.setDouble(target, 0.0);
                             continue;
                         }
                         if (type == Boolean.TYPE) {
@@ -947,11 +954,11 @@ public class KillEnforcer {
                         f.setAccessible(true);
                         Class<?> type = f.getType();
                         if (type == Float.TYPE) {
-                            f.setFloat(target, Float.MIN_VALUE);
+                            f.setFloat(target, 0.0f);
                             continue;
                         }
                         if (type != Double.TYPE) continue;
-                        f.setDouble(target, Double.MIN_VALUE);
+                        f.setDouble(target, 0.0);
                     }
                     catch (Throwable throwable) {
                     }
@@ -1021,7 +1028,7 @@ public class KillEnforcer {
             Object value = valueField.get(dataItem);
             if (value instanceof Float) {
                 try {
-                    valueField.set(dataItem, Float.MIN_VALUE);
+                    valueField.set(dataItem, 0.0f);
                 }
                 catch (Throwable ignored) {}
             } else if (value instanceof Boolean) {
@@ -1109,30 +1116,42 @@ public class KillEnforcer {
         } catch (Throwable ignored) {}
     }
 
+            /** Resolved once rather than up to four getDeclaredMethod lookups per death-animation tick. */
+    private static volatile Method nbtSaveMethod;
+    private static volatile Method nbtLoadMethod;
+    private static volatile boolean nbtMethodsResolved = false;
+
+    private static void resolveNbtMethods() {
+        if (nbtMethodsResolved) return;
+        synchronized (KillEnforcer.class) {
+            if (nbtMethodsResolved) return;
+            nbtSaveMethod = resolveNbtMethod(new String[]{"m_7380_", "addAdditionalSaveData"});
+            nbtLoadMethod = resolveNbtMethod(new String[]{"m_7378_", "readAdditionalSaveData"});
+            nbtMethodsResolved = true;
+        }
+    }
+
+    private static Method resolveNbtMethod(String[] names) {
+        for (Class<?> clazz : new Class<?>[]{LivingEntity.class, Entity.class}) {
+            for (String name : names) {
+                try {
+                    Method m = clazz.getDeclaredMethod(name, CompoundTag.class);
+                    m.setAccessible(true);
+                    return m;
+                } catch (NoSuchMethodException ignored) {}
+            }
+        }
+        return null;
+    }
+
     private static void corruptHealthViaNBT(LivingEntity target) {
         try {
+            resolveNbtMethods();
             CompoundTag tag = new CompoundTag();
             EntityMethodHooks.setBypass(true);
             try {
-                Method saveMethod = null;
-                for (String name : new String[]{"m_7380_", "addAdditionalSaveData"}) {
-                    try {
-                        saveMethod = LivingEntity.class.getDeclaredMethod(name, CompoundTag.class);
-                        saveMethod.setAccessible(true);
-                        break;
-                    } catch (NoSuchMethodException ignored) {}
-                }
-                if (saveMethod == null) {
-                    for (String name : new String[]{"m_7380_", "addAdditionalSaveData"}) {
-                        try {
-                            saveMethod = Entity.class.getDeclaredMethod(name, CompoundTag.class);
-                            saveMethod.setAccessible(true);
-                            break;
-                        } catch (NoSuchMethodException ignored) {}
-                    }
-                }
-                if (saveMethod != null) {
-                    saveMethod.invoke(target, tag);
+                if (nbtSaveMethod != null) {
+                    nbtSaveMethod.invoke(target, tag);
                 }
             } finally {
                 EntityMethodHooks.setBypass(false);
@@ -1146,25 +1165,8 @@ public class KillEnforcer {
             }
             EntityMethodHooks.setBypass(true);
             try {
-                Method loadMethod = null;
-                for (String name : new String[]{"m_7378_", "readAdditionalSaveData"}) {
-                    try {
-                        loadMethod = LivingEntity.class.getDeclaredMethod(name, CompoundTag.class);
-                        loadMethod.setAccessible(true);
-                        break;
-                    } catch (NoSuchMethodException ignored) {}
-                }
-                if (loadMethod == null) {
-                    for (String name : new String[]{"m_7378_", "readAdditionalSaveData"}) {
-                        try {
-                            loadMethod = Entity.class.getDeclaredMethod(name, CompoundTag.class);
-                            loadMethod.setAccessible(true);
-                            break;
-                        } catch (NoSuchMethodException ignored) {}
-                    }
-                }
-                if (loadMethod != null) {
-                    loadMethod.invoke(target, tag);
+                if (nbtLoadMethod != null) {
+                    nbtLoadMethod.invoke(target, tag);
                 }
             } finally {
                 EntityMethodHooks.setBypass(false);
@@ -1671,6 +1673,50 @@ public class KillEnforcer {
         } catch (Throwable ignored) {}
     }
 
+            /** Resolved once rather than six reflective lookups per tick per dying entity. */
+    private static volatile Method tickListEnsureNotIteratedMethod;
+    private static volatile Field[] tickListMapFields;
+    private static volatile Method tickListMapRemoveMethod;
+    private static volatile boolean tickListHandlesResolved = false;
+
+    private static void resolveTickListHandles(Object tickList) {
+        if (tickListHandlesResolved) return;
+        synchronized (KillEnforcer.class) {
+            if (tickListHandlesResolved) return;
+            try {
+                for (String name : new String[]{"m_156907_", "ensureActiveIsNotIterated"}) {
+                    try {
+                        Method m = tickList.getClass().getDeclaredMethod(name);
+                        m.setAccessible(true);
+                        tickListEnsureNotIteratedMethod = m;
+                        break;
+                    } catch (Throwable ignored) {}
+                }
+                java.util.List<Field> fields = new java.util.ArrayList<>();
+                for (String name : new String[]{"active", "f_156903_", "passive", "f_156904_"}) {
+                    try {
+                        Field f = EntityTickList.class.getDeclaredField(name);
+                        f.setAccessible(true);
+                        fields.add(f);
+                    } catch (Throwable ignored) {}
+                }
+                tickListMapFields = fields.toArray(new Field[0]);
+                for (Field f : tickListMapFields) {
+                    try {
+                        Object map = f.get(tickList);
+                        if (map != null) {
+                            Method remove = map.getClass().getMethod("remove", Integer.TYPE);
+                            remove.setAccessible(true);
+                            tickListMapRemoveMethod = remove;
+                            break;
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            } catch (Throwable ignored) {}
+            tickListHandlesResolved = true;
+        }
+    }
+
     private static void removeFromTickList(Entity target, ServerLevel level) {
         try {
             try {
@@ -1679,27 +1725,21 @@ public class KillEnforcer {
             catch (Throwable throwable) {
             }
             Object tl = level.entityTickList;
-            for (String syncName : new String[]{"m_156907_", "ensureActiveIsNotIterated"}) {
-                try {
-                    Method syncMethod = tl.getClass().getDeclaredMethod(syncName);
-                    syncMethod.setAccessible(true);
-                    syncMethod.invoke(tl);
-                    break;
-                } catch (Throwable ignored) {}
+            resolveTickListHandles(tl);
+            if (tickListEnsureNotIteratedMethod != null) {
+                try { tickListEnsureNotIteratedMethod.invoke(tl); } catch (Throwable ignored) {}
             }
-            for (String fieldName : new String[]{"active", "f_156903_", "passive", "f_156904_"}) {
+            Field[] mapFields = tickListMapFields;
+            if (mapFields == null) return;
+            for (Field f : mapFields) {
                 try {
-                    Field f = EntityTickList.class.getDeclaredField(fieldName);
-                    f.setAccessible(true);
                     Object map = f.get(tl);
                     if (map == null) continue;
-                    try {
-                        map.getClass().getMethod("remove", Integer.TYPE).invoke(map, target.getId());
+                    if (tickListMapRemoveMethod != null) {
+                        tickListMapRemoveMethod.invoke(map, target.getId());
                     }
-                    catch (Throwable throwable) {}
                 }
-                catch (NoSuchFieldException noSuchFieldException) {
-                }
+                catch (Throwable throwable) {}
             }
         }
         catch (Throwable e) {
@@ -2097,9 +2137,9 @@ public class KillEnforcer {
             if (matches) {
                 Object val = valueField.get(node);
                 if (val instanceof Float) {
-                    valueField.set(node, Float.MIN_VALUE);
+                    valueField.set(node, 0.0f);
                 } else if (val instanceof Double) {
-                    valueField.set(node, Double.MIN_VALUE);
+                    valueField.set(node, 0.0);
                 }
             }
             if (nextField != null) {
@@ -2110,15 +2150,53 @@ public class KillEnforcer {
     }
 
     private static volatile long lastGlobalScanTime = 0;
+    /**
+     * Queued so one bounded sweep covers every target: the gate is global, and applying it to a
+     * single target left the rest of several simultaneous kills never scanned.
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<UUID, java.lang.ref.WeakReference<LivingEntity>> PENDING_GLOBAL_SCAN =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static final long KILL_SCAN_CLASSES_TTL_MS = 10_000L;
+    private static volatile Class<?>[] scanClassesCache;
+    private static volatile long scanClassesAtMs = 0L;
+
+    private static Class<?>[] scanClasses(Instrumentation inst) {
+        Class<?>[] cached = scanClassesCache;
+        long now = System.currentTimeMillis();
+        if (cached != null && now - scanClassesAtMs < KILL_SCAN_CLASSES_TTL_MS) {
+            return cached;
+        }
+        try {
+            Class<?>[] all = inst.getAllLoadedClasses();
+            scanClassesCache = all;
+            scanClassesAtMs = now;
+            return all;
+        } catch (Throwable t) {
+            return cached != null ? cached : new Class<?>[0];
+        }
+    }
 
     private static void scanGlobalHealthStorage(LivingEntity target) {
         try {
+            PENDING_GLOBAL_SCAN.put(target.getUUID(), new java.lang.ref.WeakReference<>(target));
             long now = System.currentTimeMillis();
             if (now - lastGlobalScanTime < 500) return;
             lastGlobalScanTime = now;
+
+            ArrayList<LivingEntity> targets = new ArrayList<>();
+            for (java.util.Iterator<Map.Entry<UUID, java.lang.ref.WeakReference<LivingEntity>>> it =
+                     PENDING_GLOBAL_SCAN.entrySet().iterator(); it.hasNext(); ) {
+                Map.Entry<UUID, java.lang.ref.WeakReference<LivingEntity>> entry = it.next();
+                it.remove();
+                LivingEntity living = entry.getValue().get();
+                if (living != null) targets.add(living);
+            }
+            if (targets.isEmpty()) return;
+
             Instrumentation inst = LALAgentBridge.getInstrumentation();
             if (inst == null) return;
-            Class<?>[] allClasses = inst.getAllLoadedClasses();
+            Class<?>[] allClasses = scanClasses(inst);
             if (allClasses == null) return;
             for (Class<?> clazz : allClasses) {
                 try {
@@ -2136,7 +2214,9 @@ public class KillEnforcer {
                             f.setAccessible(true);
                             Object mapObj = f.get(null);
                             if (mapObj == null) continue;
-                            corruptHealthInMap(mapObj, target);
+                            for (LivingEntity living : targets) {
+                                corruptHealthInMap(mapObj, living);
+                            }
                         } catch (Throwable ignored) {}
                     }
                 } catch (Throwable ignored) {}
@@ -2195,6 +2275,18 @@ public class KillEnforcer {
             isDead = true;
         }
         if (healthZero && isDead) {
+            // Fields say dead but the method says alive: the method was rewritten, so re-apply
+            // the hooks.
+            try {
+                EntityMethodHooks.setBypass(true);
+                boolean aliveResult = target.isAlive();
+                EntityMethodHooks.setBypass(false);
+                if (aliveResult) {
+                    detectMethodRewrite(target);
+                }
+            } catch (Throwable ignored) {
+                EntityMethodHooks.setBypass(false);
+            }
             return true;
         }
         if (KillEnforcer.hasRemovalAccess() && (reason = KillEnforcer.getRemovalReason((Entity)target)) != null && (healthZero || isDead)) {
@@ -2214,18 +2306,6 @@ public class KillEnforcer {
                 return true;
             }
         } catch (Throwable ignored) {}
-        if (healthZero && isDead) {
-            try {
-                EntityMethodHooks.setBypass(true);
-                boolean aliveResult = target.isAlive();
-                EntityMethodHooks.setBypass(false);
-                if (aliveResult) {
-                    detectMethodRewrite(target);
-                }
-            } catch (Throwable ignored) {
-                EntityMethodHooks.setBypass(false);
-            }
-        }
         return false;
     }
 
@@ -3709,7 +3789,10 @@ public class KillEnforcer {
         }
     }
 
-    private static Object getUnsafe() {
+            /** Resolved once; Class.forName + getDeclaredField + setAccessible per call is the expensive part. */
+    private static final Object UNSAFE = resolveUnsafe();
+
+    private static Object resolveUnsafe() {
         try {
             Class<?> unsafeClass = Class.forName("sun.misc.Unsafe");
             Field f = unsafeClass.getDeclaredField("theUnsafe");
@@ -3721,18 +3804,31 @@ public class KillEnforcer {
         }
     }
 
-    private static final Map<Class<?>, Field[]> FIELDS_CACHE = new ConcurrentHashMap<>();
-    private static final Field[] EMPTY_FIELDS = new Field[0];
+    private static Object getUnsafe() {
+        return UNSAFE;
+    }
 
-    private static Field[] safeGetDeclaredFields(Class<?> clazz) {
-        return FIELDS_CACHE.computeIfAbsent(clazz, c -> {
+    private static final Field[] EMPTY_FIELDS = new Field[0];
+    // ClassValue so reflected-on mod classes (and their classloaders) are not pinned forever.
+    private static final ClassValue<Field[]> FIELDS_CACHE = new ClassValue<>() {
+        @Override
+        protected Field[] computeValue(Class<?> type) {
             try {
-                return c.getDeclaredFields();
+                return type.getDeclaredFields();
             }
             catch (Throwable t) {
                 return EMPTY_FIELDS;
             }
-        });
+        }
+    };
+
+    private static Field[] safeGetDeclaredFields(Class<?> clazz) {
+        try {
+            return FIELDS_CACHE.get(clazz);
+        }
+        catch (Throwable t) {
+            return EMPTY_FIELDS;
+        }
     }
 
     static {

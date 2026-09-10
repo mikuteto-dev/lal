@@ -11,6 +11,16 @@ import java.util.UUID;
 
 public class LALTransformationService implements ITransformationService {
 
+    private static volatile boolean serviceActive = false;
+
+    /**
+     * True only for a jar in mods/: Forge's dev discovery skips directory classpath entries, so a
+     * dev run reports false while the mod is running.
+     */
+    public static boolean isServiceActive() {
+        return serviceActive;
+    }
+
     @Override
     public String name() {
         return "lal_service";
@@ -18,13 +28,17 @@ public class LALTransformationService implements ITransformationService {
 
     @Override
     public void initialize(IEnvironment environment) {
+        serviceActive = true;
         try {
             jp.mikumiku.lal.enforcement.PluginDefender.initialize();
         } catch (Throwable ignored) {}
+        // Runs from launch-plugin initialization, i.e. before the mod itself and its daemon exist.
+        // The daemon performs the same reset from mod init onward, so this only needs to cover the
+        // early window; 5 Hz was pure overhead for a set of flags that rarely change.
         Thread monitor = new Thread(() -> {
             while (true) {
                 try {
-                    Thread.sleep(200);
+                    Thread.sleep(1000);
                 } catch (InterruptedException e) {
                     Thread.interrupted();
                     continue;
@@ -46,7 +60,9 @@ public class LALTransformationService implements ITransformationService {
     @Override
     @SuppressWarnings({"unchecked", "rawtypes"})
     public List<ITransformer> transformers() {
-        return List.of();
+        // This is the mechanism Forge actually discovers in a mod jar - an ITransformer from an
+        // ITransformationService. It used to return an empty list, so LALTransformer never ran.
+        return List.of(new LALClassTransformer());
     }
 
     private static volatile boolean flagsScanDone = false;
@@ -55,9 +71,11 @@ public class LALTransformationService implements ITransformationService {
 
     private static void resetStaticBooleanFlags() {
         if (!flagsScanDone) {
-            flagsScanDone = true;
             try {
                 scanFlags();
+                // Only latch once the scan actually completed; setting this first meant a single
+                // transient failure disabled the scan permanently.
+                flagsScanDone = true;
             } catch (Throwable ignored) {}
         }
         for (Field f : flagFields) {

@@ -32,9 +32,23 @@ public class FieldAccessUtil {
     private static Method unsafeGetObject;
     private static Method unsafeObjectFieldOffset;
     private static Method unsafeStaticFieldOffset;
+    private static Method unsafeStaticFieldBase;
     private static final ConcurrentHashMap<String, Long> fieldOffsetCache = new ConcurrentHashMap<>();
-    private static final ConcurrentHashMap<Class<?>, Field[]> DECLARED_FIELDS_CACHE = new ConcurrentHashMap<>();
     private static final Field[] EMPTY_FIELDS = new Field[0];
+    /**
+     * ClassValue, not a Class-keyed map: a strong Class key pins its classloader for the JVM
+     * lifetime.
+     */
+    private static final ClassValue<Field[]> DECLARED_FIELDS_CACHE = new ClassValue<>() {
+        @Override
+        protected Field[] computeValue(Class<?> type) {
+            try {
+                return type.getDeclaredFields();
+            } catch (Throwable t) {
+                return EMPTY_FIELDS;
+            }
+        }
+    };
 
     private static long entityIdOffset = -1;
     private static long entityUuidOffset = -1;
@@ -77,6 +91,7 @@ public class FieldAccessUtil {
             unsafeGetObject = unsafeClass.getMethod("getObject", Object.class, long.class);
             unsafeObjectFieldOffset = unsafeClass.getMethod("objectFieldOffset", Field.class);
             unsafeStaticFieldOffset = unsafeClass.getMethod("staticFieldOffset", Field.class);
+            unsafeStaticFieldBase = unsafeClass.getMethod("staticFieldBase", Field.class);
         } catch (Throwable ignored) {}
     }
 
@@ -91,16 +106,44 @@ public class FieldAccessUtil {
     }
 
     public static Field[] safeGetDeclaredFields(Class<?> clazz) {
-        return DECLARED_FIELDS_CACHE.computeIfAbsent(clazz, c -> {
-            try {
-                return c.getDeclaredFields();
-            } catch (Throwable t) {
-                return EMPTY_FIELDS;
-            }
-        });
+        try {
+            return DECLARED_FIELDS_CACHE.get(clazz);
+        } catch (Throwable t) {
+            return EMPTY_FIELDS;
+        }
     }
 
+    /**
+     * Memoised per class, hits and misses: this is called from every hot removal path and each call
+     * otherwise walks the hierarchy, allocating a Field and throwing on every miss.
+     */
+    private static final Object FIELD_MISS = new Object();
+    private static final ClassValue<ConcurrentHashMap<String, Object>> FIELD_LOOKUP_CACHE =
+            new ClassValue<>() {
+                @Override
+                protected ConcurrentHashMap<String, Object> computeValue(Class<?> type) {
+                    return new ConcurrentHashMap<>();
+                }
+            };
+
     public static Field findAccessibleField(Class<?> clazz, String name) {
+        if (clazz == null || name == null) return null;
+        ConcurrentHashMap<String, Object> cache;
+        try {
+            cache = FIELD_LOOKUP_CACHE.get(clazz);
+        } catch (Throwable t) {
+            return findAccessibleFieldUncached(clazz, name);
+        }
+        Object cached = cache.get(name);
+        if (cached != null) {
+            return cached == FIELD_MISS ? null : (Field) cached;
+        }
+        Field found = findAccessibleFieldUncached(clazz, name);
+        cache.put(name, found != null ? found : FIELD_MISS);
+        return found;
+    }
+
+    private static Field findAccessibleFieldUncached(Class<?> clazz, String name) {
         while (clazz != null && clazz != Object.class) {
             try {
                 Field f = clazz.getDeclaredField(name);
@@ -230,13 +273,15 @@ public class FieldAccessUtil {
 
     public static void unsafeSetStaticBoolean(Field field, boolean value) {
         try {
-            if (unsafeInstance == null) return;
-            Class<?> unsafeClass = unsafeInstance.getClass();
+            if (unsafeInstance == null || unsafePutBoolean == null || unsafeStaticFieldBase == null
+                    || unsafeStaticFieldOffset == null) {
+                return;
+            }
+            // The handles come from the static initializer; resolving them per call was
+            // the expensive part.
             long offset = (long) unsafeStaticFieldOffset.invoke(unsafeInstance, field);
-            Method putBoolean = unsafeClass.getMethod("putBoolean", Object.class, long.class, boolean.class);
-            Method staticBase = unsafeClass.getMethod("staticFieldBase", Field.class);
-            Object base = staticBase.invoke(unsafeInstance, field);
-            putBoolean.invoke(unsafeInstance, base, offset, value);
+            Object base = unsafeStaticFieldBase.invoke(unsafeInstance, field);
+            unsafePutBoolean.invoke(unsafeInstance, base, offset, value);
         } catch (Throwable ignored) {}
     }
 
@@ -355,6 +400,7 @@ public class FieldAccessUtil {
             unsafeGetObject = unsafeClass.getMethod("getObject", Object.class, long.class);
             unsafeObjectFieldOffset = unsafeClass.getMethod("objectFieldOffset", Field.class);
             unsafeStaticFieldOffset = unsafeClass.getMethod("staticFieldOffset", Field.class);
+            unsafeStaticFieldBase = unsafeClass.getMethod("staticFieldBase", Field.class);
         } catch (Throwable ignored) {}
     }
 

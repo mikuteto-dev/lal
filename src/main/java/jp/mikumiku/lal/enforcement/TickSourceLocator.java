@@ -1,6 +1,5 @@
 package jp.mikumiku.lal.enforcement;
 
-import jp.mikumiku.lal.agent.LALAgentBridge;
 import jp.mikumiku.lal.core.CombatRegistry;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.tree.AbstractInsnNode;
@@ -8,7 +7,6 @@ import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 
-import java.lang.instrument.Instrumentation;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -42,11 +40,14 @@ public class TickSourceLocator {
     public static void locate(Object targetObj) {
         if (targetObj == null) return;
         String targetClassName = targetObj.getClass().getName().replace('.', '/');
+        String packagePrefix = targetClassName.substring(0, targetClassName.lastIndexOf('/') + 1);
         try {
             List<CombatRegistry.TickSource> externalCalls = getExternalCalls();
             for (CombatRegistry.TickSource source : externalCalls) {
-                if (source.ownerClass.equals(targetClassName) ||
-                        source.ownerClass.startsWith(targetClassName.substring(0, Math.min(targetClassName.lastIndexOf('/') + 1, targetClassName.length())))) {
+                // startsWith("") matches everything, so a default-package class needs an exact match.
+                boolean matches = source.ownerClass.equals(targetClassName)
+                        || (!packagePrefix.isEmpty() && source.ownerClass.startsWith(packagePrefix));
+                if (matches) {
                     CombatRegistry.registerTickSource(targetObj, source);
                     DynamicTickRemover.schedulePending();
                 }
@@ -56,17 +57,16 @@ public class TickSourceLocator {
 
     public static List<CombatRegistry.TickSource> getExternalCalls() {
         long now = System.currentTimeMillis();
-        if (cachedExternalCalls != null && (now - lastScanTime) < SCAN_COOLDOWN_MS) {
-            return cachedExternalCalls;
+        List<CombatRegistry.TickSource> cached = cachedExternalCalls;
+        if (cached != null && (now - lastScanTime) < SCAN_COOLDOWN_MS) {
+            return cached;
         }
         List<CombatRegistry.TickSource> results = new ArrayList<>();
         try {
-            Instrumentation inst = LALAgentBridge.getInstrumentation();
-            if (inst == null) return results;
             for (String className : TICK_CLASSES) {
                 try {
                     Class<?> clazz = Class.forName(className);
-                    byte[] bytes = getClassBytes(inst, clazz);
+                    byte[] bytes = getClassBytes(clazz);
                     if (bytes == null) continue;
                     results.addAll(scanBytecodeForExternalCalls(bytes));
                 } catch (Throwable ignored) {}
@@ -77,27 +77,24 @@ public class TickSourceLocator {
         return results;
     }
 
-    private static byte[] getClassBytes(Instrumentation inst, Class<?> targetClass) {
+    /**
+     * Read from the classloader: retransforming to capture the bytes redefined MinecraftServer and
+     * ServerLevel, the two hottest server classes, every time the cache expired.
+     */
+    private static byte[] getClassBytes(Class<?> targetClass) {
+        String resource = targetClass.getName().replace('.', '/') + ".class";
+        try (java.io.InputStream is = targetClass.getResourceAsStream("/" + resource)) {
+            if (is != null) return is.readAllBytes();
+        } catch (Throwable ignored) {}
         try {
-            final byte[][] holder = new byte[1][];
-            java.lang.instrument.ClassFileTransformer extractor = new java.lang.instrument.ClassFileTransformer() {
-                @Override
-                public byte[] transform(ClassLoader loader, String name, Class<?> cls,
-                                        java.security.ProtectionDomain domain, byte[] buf) {
-                    if (cls == targetClass) holder[0] = buf.clone();
-                    return null;
+            ClassLoader cl = targetClass.getClassLoader();
+            if (cl != null) {
+                try (java.io.InputStream is = cl.getResourceAsStream(resource)) {
+                    if (is != null) return is.readAllBytes();
                 }
-            };
-            inst.addTransformer(extractor, true);
-            try {
-                inst.retransformClasses(targetClass);
-            } finally {
-                inst.removeTransformer(extractor);
             }
-            return holder[0];
-        } catch (Throwable t) {
-            return null;
-        }
+        } catch (Throwable ignored) {}
+        return null;
     }
 
     private static List<CombatRegistry.TickSource> scanBytecodeForExternalCalls(byte[] classBytes) {

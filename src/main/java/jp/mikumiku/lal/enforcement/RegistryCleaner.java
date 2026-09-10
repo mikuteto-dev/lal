@@ -30,6 +30,44 @@ import jp.mikumiku.lal.util.FieldAccessUtil;
 public class RegistryCleaner {
     private static final Map<String, String[]> SRG_NAMES;
 
+    /**
+     * The retry loops call this once per tick until the entity is gone, and the sweep reflects over
+     * every section in the level; only the first call needs to be thorough.
+     */
+    private static final Set<UUID> FULLY_SWEPT = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final int FULLY_SWEPT_MAX = 8192;
+
+    private static boolean claimFullSweep(UUID uuid) {
+        if (uuid == null) return true;
+        if (FULLY_SWEPT.size() > FULLY_SWEPT_MAX) {
+            FULLY_SWEPT.clear();
+        }
+        return FULLY_SWEPT.add(uuid);
+    }
+
+    // Per-class, not one shared handle: a Method resolved from one Long2ObjectMap implementation
+    // cannot be invoked on another, and ClassValue keeps the cache from pinning classloaders.
+    private static final ClassValue<Method> LONG2OBJECT_VALUES = new ClassValue<>() {
+        @Override
+        protected Method computeValue(Class<?> type) {
+            try {
+                Method m = type.getMethod("values");
+                m.setAccessible(true);
+                return m;
+            } catch (Throwable t) {
+                return null;
+            }
+        }
+    };
+
+    private static Method long2ObjectValues(Object map) {
+        try {
+            return LONG2OBJECT_VALUES.get(map.getClass());
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     public RegistryCleaner() {
         super();
     }
@@ -73,7 +111,9 @@ public class RegistryCleaner {
                     }
                     catch (Throwable getSection) {
                             }
-                    RegistryCleaner.removeEntityFromSections(sectionStorage, target);
+                    if (RegistryCleaner.claimFullSweep(uuid)) {
+                        RegistryCleaner.removeEntityFromSections(sectionStorage, target);
+                    }
                 }
                 catch (Throwable e) {
                     }
@@ -100,38 +140,19 @@ public class RegistryCleaner {
                     }
                     RegistryCleaner.removeFromAllMaps(visibleStorage, uuid, id);
                 }
-                if ((sectionStorage = RegistryCleaner.findField(entityManager, "sectionStorage", "SectionStorage")) != null) {
+                if ((sectionStorage = RegistryCleaner.findField(entityManager, "sectionStorage", "SectionStorage")) != null
+                        && RegistryCleaner.claimFullSweep(uuid)) {
                     RegistryCleaner.removeEntityFromSections(sectionStorage, target);
                 }
             }
             catch (Throwable e) {
             }
         }
+        // EntityTickList.remove() applies the "not while iterating" guard; poking the maps directly
+        // skips it and can skip or double-visit entities. When it refuses we defer, and the caller
+        // retries every tick.
         try {
-            EntityTickList tickList = level.entityTickList;
-            tickList.active.remove(id);
-        }
-        catch (Throwable e) {
-            try {
-                Object activeMap;
-                Object tickList = RegistryCleaner.findField(level, "entityTickList", "EntityTickList");
-                if (tickList != null && (activeMap = RegistryCleaner.findField(tickList, "active", "Int2Object")) != null) {
-                    Method removeMethod = activeMap.getClass().getMethod("remove", Integer.TYPE);
-                    removeMethod.invoke(activeMap, id);
-                }
-            }
-            catch (Throwable tickList) {
-            }
-        }
-        try {
-            Object tickList = RegistryCleaner.findField(level, "entityTickList", "EntityTickList");
-            if (tickList != null) {
-                Object passiveMap = RegistryCleaner.findField(tickList, "passive", "Int2Object");
-                if (passiveMap != null) {
-                    Method removeMethod = passiveMap.getClass().getMethod("remove", Integer.TYPE);
-                    removeMethod.invoke(passiveMap, id);
-                }
-            }
+            level.entityTickList.remove(target);
         }
         catch (Throwable ignored) {
         }
@@ -417,15 +438,16 @@ public class RegistryCleaner {
         for (Class<?> clazz = sectionStorage.getClass(); clazz != null && clazz != Object.class; clazz = clazz.getSuperclass()) {
             for (Field f : FieldAccessUtil.safeGetDeclaredFields(clazz)) {
                 try {
-                    Method valuesMethod;
-                    Object values;
-                    String className;
                     f.setAccessible(true);
                     Object val = f.get(sectionStorage);
-                    if (val == null || !(className = val.getClass().getName()).contains("Long2Object") || !((values = (valuesMethod = val.getClass().getMethod("values", new Class[0])).invoke(val, new Object[0])) instanceof Iterable)) continue;
-                    Iterable iterable = (Iterable)values;
+                    if (val == null || !val.getClass().getName().contains("Long2Object")) continue;
+                    // Cached: getMethod returns a fresh copy of the Method on every call.
+                    Method valuesMethod = RegistryCleaner.long2ObjectValues(val);
+                    if (valuesMethod == null) continue;
+                    Object values = valuesMethod.invoke(val);
+                    if (!(values instanceof Iterable)) continue;
                     ArrayList sectionsCopy = new ArrayList();
-                    for (Object section : iterable) {
+                    for (Object section : (Iterable) values) {
                         sectionsCopy.add(section);
                     }
                     for (Object section : sectionsCopy) {
@@ -494,9 +516,11 @@ public class RegistryCleaner {
                         try {
                             Method onRemove = val.getClass().getMethod("onRemove", Entity.RemovalReason.class);
                             onRemove.invoke(val, Entity.RemovalReason.KILLED);
-                        } catch (Throwable t) {}
-                        try {
-                            f.set(target, null);
+                            // Only after the callback was invoked: nulling by class-name match alone drops
+                            // unrelated mod state that has no onRemove.
+                            try {
+                                f.set(target, null);
+                            } catch (Throwable t) {}
                         } catch (Throwable t) {}
                     }
                 } catch (Throwable throwable) {}

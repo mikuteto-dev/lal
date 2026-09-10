@@ -43,12 +43,13 @@ public class DynamicTickRemover {
 
     public static void applyPending() {
         if (!pendingRemoval) return;
-        pendingRemoval = false;
         try {
             Set<CombatRegistry.TickSource> toRemove = collectTickSourcesToRemove();
+            // Kept pending on both early exits: clearing the flag up front silently dropped the request.
             if (toRemove.isEmpty()) return;
             Instrumentation inst = LALAgentBridge.getInstrumentation();
             if (inst == null) return;
+            pendingRemoval = false;
             TickRemovalTransformer transformer = new TickRemovalTransformer(toRemove);
             inst.addTransformer(transformer, true);
             try {

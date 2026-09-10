@@ -86,68 +86,93 @@ public class LALEntityRemover {
 
     private static void ensureInit(ServerLevel level) {
         if (init) return;
-        init = true;
-        try {
-            srvEntityManager = resolveField(level.getClass(), "f_143244_", "entityManager");
-            srvEntityTickList = resolveField(level.getClass(), "f_143243_", "entityTickList");
-
-            Object mgr = get(srvEntityManager, level);
-            if (mgr != null) {
-                mgrSectionStorage = resolveField(mgr.getClass(), "f_157495_", "sectionStorage");
-                mgrVisibleStorage = resolveField(mgr.getClass(), "f_157494_", "visibleEntityStorage");
-                mgrKnownUuids = resolveField(mgr.getClass(), "f_157491_", "knownUuids");
-
-                Object vis = get(mgrVisibleStorage, mgr);
-                if (vis != null) {
-                    lookupByUuid = resolveField(vis.getClass(), "f_156808_", "byUuid");
-                    lookupById = resolveField(vis.getClass(), "f_156807_", "byId");
-                }
-
-                Object storage = get(mgrSectionStorage, mgr);
-                if (storage != null) {
-                    sectionStorageGetSection = resolveMethod(storage,
-                            new String[]{"m_156895_", "getSection"}, Long.TYPE);
-                }
-
-                mgrUpdateSectionStatus = resolveMethodByNameAndParamCount(mgr,
-                        new String[]{"m_157509_", "updateSectionStatus"}, 2);
-            }
-
-            Object tl = get(srvEntityTickList, level);
-            if (tl != null) {
-                tickListActive = resolveField(tl.getClass(), "f_156903_", "active");
-                tickListPassive = resolveField(tl.getClass(), "f_156904_", "passive");
-                tickListEnsureNotIterated = resolveMethod(tl,
-                        new String[]{"m_156907_", "ensureActiveIsNotIterated"});
-            }
-
+        synchronized (LALEntityRemover.class) {
+            if (init) return;
             try {
-                Object cs = level.getChunkSource();
-                chunkSourceRemoveEntity = resolveMethod(cs,
-                        new String[]{"m_83420_", "removeEntity"}, Entity.class);
+                srvEntityManager = resolveField(level.getClass(), "f_143244_", "entityManager");
+                srvEntityTickList = resolveField(level.getClass(), "f_143243_", "entityTickList");
+
+                Object mgr = get(srvEntityManager, level);
+                if (mgr != null) {
+                    mgrSectionStorage = resolveField(mgr.getClass(), "f_157495_", "sectionStorage");
+                    mgrVisibleStorage = resolveField(mgr.getClass(), "f_157494_", "visibleEntityStorage");
+                    mgrKnownUuids = resolveField(mgr.getClass(), "f_157491_", "knownUuids");
+
+                    Object vis = get(mgrVisibleStorage, mgr);
+                    if (vis != null) {
+                        lookupByUuid = resolveField(vis.getClass(), "f_156808_", "byUuid");
+                        lookupById = resolveField(vis.getClass(), "f_156807_", "byId");
+                    }
+
+                    Object storage = get(mgrSectionStorage, mgr);
+                    if (storage != null) {
+                        sectionStorageGetSection = resolveMethod(storage,
+                                new String[]{"m_156895_", "getSection"}, Long.TYPE);
+                    }
+
+                    mgrUpdateSectionStatus = resolveMethodByNameAndParamCount(mgr,
+                            new String[]{"m_157509_", "updateSectionStatus"}, 2);
+                }
+
+                Object tl = get(srvEntityTickList, level);
+                if (tl != null) {
+                    tickListActive = resolveField(tl.getClass(), "f_156903_", "active");
+                    tickListPassive = resolveField(tl.getClass(), "f_156904_", "passive");
+                    tickListEnsureNotIterated = resolveMethod(tl,
+                            new String[]{"m_156907_", "ensureActiveIsNotIterated"});
+                }
+
+                try {
+                    Object cs = level.getChunkSource();
+                    chunkSourceRemoveEntity = resolveMethod(cs,
+                            new String[]{"m_83420_", "removeEntity"}, Entity.class);
+                } catch (Throwable ignored) {}
+
+                // Published only after resolution succeeds, so a transient failure can be retried.
+                init = true;
             } catch (Throwable ignored) {}
-        } catch (Throwable ignored) {}
+        }
     }
 
     public static void deleteFromLevel(Entity entity, ServerLevel level) {
         if (entity == null || level == null) return;
         ensureInit(level);
 
-        try {
-            if (FieldAccessUtil.REMOVAL_REASON != null) {
-                Object current = FieldAccessUtil.REMOVAL_REASON.get(entity);
-                if (current == null) {
-                    FieldAccessUtil.REMOVAL_REASON.set(entity, Entity.RemovalReason.DISCARDED);
+        // Iterative and cycle-safe, with each entity resolved against its own level: recursing over
+        // the passenger chain overflowed on cycles and removed cross-dimension passengers from the
+        // parent's registries.
+        java.util.Set<Entity> visited =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        java.util.ArrayDeque<Entity> queue = new java.util.ArrayDeque<>();
+        queue.add(entity);
+        while (!queue.isEmpty()) {
+            Entity current = queue.poll();
+            if (current == null || !visited.add(current)) continue;
+
+            ServerLevel currentLevel = level;
+            try {
+                if (current.level() instanceof ServerLevel ownLevel) {
+                    currentLevel = ownLevel;
                 }
-            }
-        } catch (Throwable ignored) {}
+            } catch (Throwable ignored) {}
 
-        try {
-            for (Entity p : new ArrayList<>(entity.getPassengers()))
-                deleteFromLevel(p, level);
-        } catch (Throwable ignored) {}
+            try {
+                if (FieldAccessUtil.REMOVAL_REASON != null) {
+                    Object reason = FieldAccessUtil.REMOVAL_REASON.get(current);
+                    if (reason == null) {
+                        FieldAccessUtil.REMOVAL_REASON.set(current, Entity.RemovalReason.DISCARDED);
+                    }
+                }
+            } catch (Throwable ignored) {}
 
-        deleteFromPersistentManager(entity, level);
+            try {
+                for (Entity passenger : current.getPassengers()) {
+                    queue.add(passenger);
+                }
+            } catch (Throwable ignored) {}
+
+            deleteFromPersistentManager(current, currentLevel);
+        }
     }
 
     private static void deleteFromPersistentManager(Entity entity, ServerLevel level) {

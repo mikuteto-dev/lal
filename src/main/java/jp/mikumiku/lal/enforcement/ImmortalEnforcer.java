@@ -196,6 +196,43 @@ public class ImmortalEnforcer {
         try { FieldAccessUtil.unsafePutObject(entity, REMOVAL_REASON_FIELD != null ? REMOVAL_REASON_FIELD : FieldAccessUtil.findAccessibleField(Entity.class, "f_146795_"), value); } catch (Throwable ignored) {}
     }
 
+    private static volatile Method sectionEntitiesMethod_IE;
+    private static volatile boolean sectionEntitiesMethod_IE_resolved = false;
+
+    private static Method resolveSectionEntitiesMethod(Object section) {
+        if (!sectionEntitiesMethod_IE_resolved) {
+            synchronized (ImmortalEnforcer.class) {
+                if (!sectionEntitiesMethod_IE_resolved) {
+                    try {
+                        for (Method m : section.getClass().getMethods()) {
+                            if (m.getParameterCount() != 0) continue;
+                            if (m.getReturnType().getSimpleName().contains("ClassInstanceMultiMap")) {
+                                m.setAccessible(true);
+                                sectionEntitiesMethod_IE = m;
+                                break;
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                    sectionEntitiesMethod_IE_resolved = true;
+                }
+            }
+        }
+        return sectionEntitiesMethod_IE;
+    }
+
+            /** Fails open: a resolution problem must not disable registration entirely. */
+    private static boolean sectionContainsEntity(Object section, Entity entity) {
+        try {
+            Method m = resolveSectionEntitiesMethod(section);
+            if (m == null) return false;
+            Object storage = m.invoke(section);
+            if (storage instanceof java.util.Collection) {
+                return ((java.util.Collection<?>) storage).contains(entity);
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
     private static Entity.RemovalReason getRemovalReasonField(Entity entity) {
         if (REMOVAL_REASON_HANDLE != null && !FieldAccessUtil.isVarHandleCompromised()) {
             return (Entity.RemovalReason) REMOVAL_REASON_HANDLE.get(entity);
@@ -693,10 +730,12 @@ public class ImmortalEnforcer {
                 if (DATA_HEALTH_ID_ACCESSOR != null && accessor.equals(DATA_HEALTH_ID_ACCESSOR)) {
                     return;
                 }
-                if (value instanceof Float && (f = (Float)value).floatValue() != 0.0f && f.floatValue() != Float.MIN_VALUE) {
+                if (value instanceof Float && (f = (Float)value).floatValue() != 0.0f) {
                     try {
                         typedAccessor3 = (EntityDataAccessor)accessor;
-                        entity.getEntityData().set(typedAccessor3, Float.valueOf(Float.MIN_VALUE));
+                        // Exact zero: Float.MIN_VALUE is the smallest positive denormal, so it reads as
+                        // alive, unlike the Boolean->false and Integer->0 handled below.
+                        entity.getEntityData().set(typedAccessor3, Float.valueOf(0.0f));
                     }
                     catch (Throwable ignored2) {
                         {}
@@ -812,8 +851,9 @@ public class ImmortalEnforcer {
                         if (f.getType() != Float.TYPE || VANILLA_FLOAT_FIELDS.contains(name = f.getName()) || name.contains("speed") || name.contains("Rot") || name.contains("anim") || name.contains("bob") || name.contains("render") || name.contains("alpha") || name.contains("scale") || name.contains("timer") || name.contains("cooldown") || name.contains("Step") || name.contains("distance") || name.contains("Flap") || name.contains("attack") || name.contains("hurt") || name.contains("jump") || name.contains("fly") || name.contains("walk") || name.contains("swim") || name.contains("yaw") || name.contains("pitch") || name.contains("eye") || Modifier.isStatic(f.getModifiers())) continue;
                         f.setAccessible(true);
                         float val = f.getFloat(entity);
-                        if (val == 0.0f || val == Float.MIN_VALUE) continue;
-                        f.setFloat(entity, Float.MIN_VALUE);
+                        if (val == 0.0f) continue;
+                        // Exact zero: Float.MIN_VALUE is a positive denormal and reads as alive.
+                        f.setFloat(entity, 0.0f);
                     }
                     catch (Throwable throwable) {
                         }
@@ -860,7 +900,38 @@ public class ImmortalEnforcer {
         return reason == null;
     }
 
+    /**
+     * Memoised per class, hits and misses: this runs per synched-data item per enforcement pass and
+     * otherwise walks the hierarchy, throwing on every miss.
+     */
+    private static final Object FIND_FIELD_MISS = new Object();
+    private static final ClassValue<java.util.concurrent.ConcurrentHashMap<String, Object>> FIND_FIELD_CACHE =
+            new ClassValue<>() {
+                @Override
+                protected java.util.concurrent.ConcurrentHashMap<String, Object> computeValue(Class<?> type) {
+                    return new java.util.concurrent.ConcurrentHashMap<>();
+                }
+            };
+
     private static Field findField(Class<?> clazz, String preferredName, String typeHint) {
+        if (clazz == null) return null;
+        java.util.concurrent.ConcurrentHashMap<String, Object> cache;
+        try {
+            cache = FIND_FIELD_CACHE.get(clazz);
+        } catch (Throwable t) {
+            return findFieldUncached(clazz, preferredName, typeHint);
+        }
+        String key = preferredName + ':' + typeHint;
+        Object cached = cache.get(key);
+        if (cached != null) {
+            return cached == FIND_FIELD_MISS ? null : (Field) cached;
+        }
+        Field found = findFieldUncached(clazz, preferredName, typeHint);
+        cache.put(key, found != null ? found : FIND_FIELD_MISS);
+        return found;
+    }
+
+    private static Field findFieldUncached(Class<?> clazz, String preferredName, String typeHint) {
         while (clazz != null && clazz != Object.class) {
             try {
                 Field f = clazz.getDeclaredField(preferredName);
@@ -993,7 +1064,7 @@ public class ImmortalEnforcer {
                 } catch (NoSuchFieldException ignored) {}
             }
         } catch (Throwable ignored) {}
-        VANILLA_FLOAT_FIELDS = Set.of("xo", "yo", "zo", "xOld", "yOld", "zOld", "yRot", "xRot", "yRotO", "xRotO", "yBRot", "yBRotO", "fallDistance", "nextFlap", "eyeHeight", "f_19854_", "f_19855_", "f_19856_", "f_19790_", "f_19791_", "f_19792_", "f_19857_", "f_19858_", "f_19859_", "f_19860_", "f_19789_", "f_19816_", "f_19793_", "f_19829_", "f_19787_", "f_19867_", "f_19788_", "health", "lastHurt", "animStep", "animStepO", "yBodyRot", "yBodyRotO", "yHeadRot", "yHeadRotO", "speed", "flyingSpeed", "attackAnim", "oAttackAnim", "animationSpeed", "animationSpeedOld", "animationPosition", "f_20898_", "f_20894_", "f_20895_", "f_20883_", "f_20884_", "f_20885_", "f_20886_", "f_20953_", "f_20921_", "f_20920_", "f_20955_", "f_20931_", "f_20932_", "bob", "oBob", "f_36100_", "f_36099_", "jumpMovementFactor");
+        VANILLA_FLOAT_FIELDS = Set.of("xo", "yo", "zo", "xOld", "yOld", "zOld", "yRot", "xRot", "yRotO", "xRotO", "yBRot", "yBRotO", "fallDistance", "nextFlap", "eyeHeight", "f_19854_", "f_19855_", "f_19856_", "f_19790_", "f_19791_", "f_19792_", "f_19857_", "f_19858_", "f_19859_", "f_19860_", "f_19789_", "f_19816_", "f_19793_", "f_19829_", "f_19787_", "f_19867_", "f_19788_", "health", "f_20769_", "lastHurt", "animStep", "animStepO", "yBodyRot", "yBodyRotO", "yHeadRot", "yHeadRotO", "speed", "flyingSpeed", "attackAnim", "oAttackAnim", "animationSpeed", "animationSpeedOld", "animationPosition", "f_20898_", "f_20894_", "f_20895_", "f_20883_", "f_20884_", "f_20885_", "f_20886_", "f_20953_", "f_20921_", "f_20920_", "f_20955_", "f_20931_", "f_20932_", "bob", "oBob", "f_36100_", "f_36099_", "jumpMovementFactor");
         VANILLA_BOOLEAN_FIELDS = Set.of("onGround", "horizontalCollision", "verticalCollision", "verticalCollisionBelow", "minorHorizontalCollision", "hurtMarked", "noPhysics", "noCulling", "hasImpulse", "isInsidePortal", "invulnerable", "firstTick", "f_19861_", "f_19862_", "f_19863_", "f_201939_", "f_185931_", "f_19864_", "f_19794_", "f_19811_", "f_19812_", "f_19817_", "f_19840_", "f_19803_", "f_19798_", "f_19800_", "f_146808_", "f_146809_", "f_146813_", "wasTouchingWater", "wasEyeInWater", "touchingUnloadedChunk", "isInPowderSnow", "wasInPowderSnow", "dead", "jumping", "effectsDirty", "autoSpinAttack", "discardFriction", "useItem", "f_20890_", "f_20899_", "f_20948_", "f_147183_", "f_20911_", "reducedDebugInfo", "wasUnderwater", "f_36076_", "f_36085_", "persistenceRequired", "aggressive", "f_21353_");
     }
 
@@ -1220,7 +1291,11 @@ public class ImmortalEnforcer {
                             int sz = SectionPos.blockToSectionCoord(entity.getBlockZ());
                             long sectionKey = SectionPos.asLong(sx, sy, sz);
                             Object section = sectionStorageGetOrCreateSection_IE.invoke(sectionStorage, sectionKey);
-                            if (section != null && sectionAddMethod_IE != null) {
+                            // Membership is tested first, like the byId/byUuid/knownUuids writes
+                            // beside it: this runs every enforcement pass and the section storage
+                            // appends without deduplicating.
+                            if (section != null && sectionAddMethod_IE != null
+                                    && !sectionContainsEntity(section, entity)) {
                                 sectionAddMethod_IE.invoke(section, entity);
                             }
                         } catch (Throwable ignored) {}

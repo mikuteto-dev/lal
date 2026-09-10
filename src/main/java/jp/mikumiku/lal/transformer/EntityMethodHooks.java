@@ -73,8 +73,14 @@ public class EntityMethodHooks {
         return null;
     }
     private static native void nativeSetBypass(boolean bypass);
+    /**
+     * The bundled native library is a Windows PE DLL. Where it is absent every native call builds a
+     * stack-traced UnsatisfiedLinkError, and setBypass is on the hottest path.
+     */
+    private static final boolean NATIVE_AVAILABLE = jp.mikumiku.lal.util.NativeLoader.isLoaded();
     private static final ThreadLocal<Boolean> BYPASS = ThreadLocal.withInitial(() -> false);
     private static final AtomicLong hookCallCount = new AtomicLong(0);
+    private static final AtomicLong totalHookCalls = new AtomicLong(0);
     public static final ConcurrentHashMap<UUID, Boolean> baseTickFired = new ConcurrentHashMap<>();
     public static volatile boolean mixinTickRan = false;
     public static final ConcurrentHashMap<UUID, Long> COLLECTING_PLAYERS = new ConcurrentHashMap<>();
@@ -93,8 +99,10 @@ public class EntityMethodHooks {
 
     public static void setBypass(boolean bypass) {
         BYPASS.set(bypass);
-        try { nativeSetBypass(bypass); } catch (Throwable t) {
-            BYPASS.set(bypass);
+        if (NATIVE_AVAILABLE) {
+            try { nativeSetBypass(bypass); } catch (Throwable t) {
+                BYPASS.set(bypass);
+            }
         }
     }
 
@@ -104,10 +112,19 @@ public class EntityMethodHooks {
 
     private static void recordHookCall() {
         hookCallCount.incrementAndGet();
+        totalHookCalls.incrementAndGet();
     }
 
     public static long getAndResetHookCallCount() {
         return hookCallCount.getAndSet(0);
+    }
+
+    /**
+     * Never reset, unlike hookCallCount: integrity checks use a stall in this value as the only
+     * observable evidence that the hooks are gone.
+     */
+    public static long getTotalHookCalls() {
+        return totalHookCalls.get();
     }
 
     public static boolean tryRunForcedTick(int currentTick) {
@@ -173,18 +190,22 @@ public class EntityMethodHooks {
             UUID uuid = entity.getUUID();
             baseTickFired.put(uuid, Boolean.TRUE);
 
-            try {
-                Level level = entity.level();
-                if (level != null && !level.isClientSide()) {
-                    int tick = level.getServer() != null ? level.getServer().getTickCount() : 0;
-                    if (tick > 0) {
-                        lastTickSeen.put(uuid, tick);
-                        if (!forcedTickThisTick.containsKey(uuid)) {
-                            normalTickSeen.put(uuid, tick);
+            // Only players are read back from these maps, so other entities skip the entry
+            // and the Integer boxing.
+            if (entity instanceof Player) {
+                try {
+                    Level level = entity.level();
+                    if (level != null && !level.isClientSide()) {
+                        int tick = level.getServer() != null ? level.getServer().getTickCount() : 0;
+                        if (tick > 0) {
+                            lastTickSeen.put(uuid, tick);
+                            if (!forcedTickThisTick.containsKey(uuid)) {
+                                normalTickSeen.put(uuid, tick);
+                            }
                         }
                     }
-                }
-            } catch (Throwable ignored) {}
+                } catch (Throwable ignored) {}
+            }
 
             try {
                 EnforcementDaemon.ensureRunning();
@@ -201,8 +222,7 @@ public class EntityMethodHooks {
             }
 
             try {
-                Class<?> daemonClass = Class.forName("jp.mikumiku.lal.enforcement.EnforcementDaemon");
-                daemonClass.getMethod("trackEntity", LivingEntity.class).invoke(null, entity);
+                EnforcementDaemon.trackEntity(entity);
             } catch (Exception ignored) {}
 
             if (CombatRegistry.isInImmortalSet(uuid)) {
@@ -1337,6 +1357,56 @@ public class EntityMethodHooks {
         return value;
     }
 
+            /** Hiding removes entries and they stay removed, so a full sweep per lookup just repeats work. */
+    private static final long HIDE_SWEEP_INTERVAL_MS = 500L;
+    private static volatile long lastByIdSweepMs = 0L;
+    private static volatile long lastByUuidSweepMs = 0L;
+
+    private static volatile java.lang.reflect.Method byIdEntrySetMethod;
+    private static volatile java.lang.reflect.Method entryGetIntKeyMethod;
+    private static volatile java.lang.reflect.Method entryGetValueMethod;
+    private static volatile java.lang.reflect.Method byIdRemoveMethod;
+    private static volatile boolean byIdReflectionResolved = false;
+
+            /** The level's entity index is not thread safe, so only the owning thread may mutate it. */
+    private static boolean mayMutateEntityIndex() {
+        try {
+            net.minecraft.server.MinecraftServer server =
+                    net.minecraftforge.server.ServerLifecycleHooks.getCurrentServer();
+            return server == null || server.isSameThread();
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    private static void resolveByIdReflection(Object byId) {
+        if (byIdReflectionResolved) return;
+        synchronized (EntityMethodHooks.class) {
+            if (byIdReflectionResolved) return;
+            try {
+                for (String name : new String[]{"int2ObjectEntrySet", "entrySet"}) {
+                    try {
+                        byIdEntrySetMethod = byId.getClass().getMethod(name);
+                        break;
+                    } catch (Throwable ignored) {}
+                }
+                if (byIdEntrySetMethod != null) {
+                    Object entrySet = byIdEntrySetMethod.invoke(byId);
+                    if (entrySet instanceof Iterable) {
+                        java.util.Iterator<?> it = ((Iterable<?>) entrySet).iterator();
+                        if (it.hasNext()) {
+                            Object entry = it.next();
+                            try { entryGetIntKeyMethod = entry.getClass().getMethod("getIntKey"); } catch (Throwable ignored) {}
+                            try { entryGetValueMethod = entry.getClass().getMethod("getValue"); } catch (Throwable ignored) {}
+                        }
+                    }
+                }
+                try { byIdRemoveMethod = byId.getClass().getMethod("remove", int.class); } catch (Throwable ignored) {}
+            } catch (Throwable ignored) {}
+            byIdReflectionResolved = true;
+        }
+    }
+
     @SuppressWarnings("unchecked")
     public static Object getFilteredById(Object lookup) {
         try {
@@ -1345,28 +1415,39 @@ public class EntityMethodHooks {
             if (CombatRegistry.getDeadConfirmedSet().isEmpty() && CombatRegistry.getKillSet().isEmpty()) {
                 return byId;
             }
+            long now = System.currentTimeMillis();
+            if (now - lastByIdSweepMs < HIDE_SWEEP_INTERVAL_MS) {
+                return byId;
+            }
+            if (!mayMutateEntityIndex()) {
+                return byId;
+            }
+            lastByIdSweepMs = now;
+            resolveByIdReflection(byId);
+
             java.util.List<Integer> keysToRemove = new java.util.ArrayList<>();
             try {
-                Object entrySet = null;
-                try { entrySet = byId.getClass().getMethod("int2ObjectEntrySet").invoke(byId); } catch (Throwable ignored) {}
-                if (entrySet == null) {
-                    try { entrySet = byId.getClass().getMethod("entrySet").invoke(byId); } catch (Throwable ignored) {}
-                }
+                Object entrySet = byIdEntrySetMethod != null ? byIdEntrySetMethod.invoke(byId) : null;
                 if (entrySet instanceof Iterable) {
                     for (Object entry : (Iterable<?>) entrySet) {
                         try {
                             int key;
-                            try { key = (int) entry.getClass().getMethod("getIntKey").invoke(entry); }
-                            catch (Throwable t) { key = (int) ((java.util.Map.Entry<?,?>) entry).getKey(); }
+                            if (entryGetIntKeyMethod != null) {
+                                key = (int) entryGetIntKeyMethod.invoke(entry);
+                            } else {
+                                key = (int) ((java.util.Map.Entry<?, ?>) entry).getKey();
+                            }
                             Object val;
-                            try { val = entry.getClass().getMethod("getValue").invoke(entry); }
-                            catch (Throwable t) { val = ((java.util.Map.Entry<?,?>) entry).getValue(); }
+                            if (entryGetValueMethod != null) {
+                                val = entryGetValueMethod.invoke(entry);
+                            } else {
+                                val = ((java.util.Map.Entry<?, ?>) entry).getValue();
+                            }
                             if (val instanceof Entity) {
-                                Entity entity = (Entity) val;
-                                UUID uuid = entity.getUUID();
-                                if (CombatRegistry.isDeadConfirmed(uuid) ||
-                                    (CombatRegistry.isInKillSet(uuid) && val instanceof LivingEntity
-                                        && ((LivingEntity) val).deathTime >= 60)) {
+                                UUID uuid = ((Entity) val).getUUID();
+                                if (CombatRegistry.isDeadConfirmed(uuid)
+                                        || (CombatRegistry.isInKillSet(uuid) && val instanceof LivingEntity
+                                            && ((LivingEntity) val).deathTime >= 60)) {
                                     keysToRemove.add(key);
                                 }
                             }
@@ -1374,8 +1455,11 @@ public class EntityMethodHooks {
                     }
                 }
             } catch (Throwable ignored) {}
+
             for (int key : keysToRemove) {
-                try { byId.getClass().getMethod("remove", int.class).invoke(byId, key); } catch (Throwable ignored) {}
+                try {
+                    if (byIdRemoveMethod != null) byIdRemoveMethod.invoke(byId, key);
+                } catch (Throwable ignored) {}
             }
             return byId;
         } catch (Throwable t) {
@@ -1391,6 +1475,15 @@ public class EntityMethodHooks {
             if (CombatRegistry.getDeadConfirmedSet().isEmpty() && CombatRegistry.getKillSet().isEmpty()) {
                 return byUuid;
             }
+            long now = System.currentTimeMillis();
+            if (now - lastByUuidSweepMs < HIDE_SWEEP_INTERVAL_MS) {
+                return byUuid;
+            }
+            if (!mayMutateEntityIndex()) {
+                return byUuid;
+            }
+            lastByUuidSweepMs = now;
+
             if (byUuid instanceof java.util.Map) {
                 java.util.Map<?, ?> map = (java.util.Map<?, ?>) byUuid;
                 java.util.List<Object> keysToRemove = new java.util.ArrayList<>();
@@ -2004,24 +2097,27 @@ public class EntityMethodHooks {
         return true;
     }
 
-    private static final ConcurrentHashMap<UUID, Entity> STRONG_TRACKED = new ConcurrentHashMap<>();
+            /** Weak, because nothing reads this and strong references pinned every attempted kill. */
+    private static final ConcurrentHashMap<UUID, java.lang.ref.WeakReference<Entity>> STRONG_TRACKED =
+            new ConcurrentHashMap<>();
 
     public static void addToStrongTracked(UUID uuid, Entity entity) {
-        if (uuid != null && entity != null) STRONG_TRACKED.put(uuid, entity);
+        if (uuid != null && entity != null) STRONG_TRACKED.put(uuid, new java.lang.ref.WeakReference<>(entity));
     }
 
     public static void removeFromStrongTracked(UUID uuid) {
         if (uuid != null) STRONG_TRACKED.remove(uuid);
     }
 
-    public static ConcurrentHashMap<UUID, Entity> getStrongTracked() {
+    public static ConcurrentHashMap<UUID, java.lang.ref.WeakReference<Entity>> getStrongTracked() {
         return STRONG_TRACKED;
     }
 
     public static void processStrongTracked() {
-        for (java.util.Map.Entry<UUID, Entity> entry : STRONG_TRACKED.entrySet()) {
+        for (java.util.Map.Entry<UUID, java.lang.ref.WeakReference<Entity>> entry : STRONG_TRACKED.entrySet()) {
             UUID uuid = entry.getKey();
-            Entity entity = entry.getValue();
+            java.lang.ref.WeakReference<Entity> ref = entry.getValue();
+            Entity entity = ref != null ? ref.get() : null;
             if (entity == null) {
                 STRONG_TRACKED.remove(uuid);
                 continue;
