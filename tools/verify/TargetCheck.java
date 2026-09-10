@@ -66,6 +66,16 @@ public class TargetCheck {
             ok = false;
         }
 
+        // 3b. Frame-computation passes must not be transformed.
+        var no = t.castVote(stub("computing_frames"));
+        var yes = t.castVote(stub("classloading"));
+        System.out.println("castVote(computing_frames)=" + no + ", castVote(classloading)=" + yes);
+        if (no != cpw.mods.modlauncher.api.TransformerVoteResult.NO
+                || yes != cpw.mods.modlauncher.api.TransformerVoteResult.YES) {
+            System.out.println("FAIL: frame-computation pass would be transformed");
+            ok = false;
+        }
+
         // 4. transform() must still produce a verifiable class through this path.
         org.objectweb.asm.tree.ClassNode cn = Check.buildClass("net/minecraft/test/Dirty");
         cast2(t).transform(cn, null);
@@ -81,6 +91,20 @@ public class TargetCheck {
 
     @SuppressWarnings("unchecked")
     static Set<ITransformer.Target> cast(ITransformer<?> t) { return ((ITransformer<Object>) t).targets(); }
+
+    static cpw.mods.modlauncher.api.ITransformerVotingContext stub(String reason) {
+        return new cpw.mods.modlauncher.api.ITransformerVotingContext() {
+            public String getClassName() { return "net.minecraft.world.entity.Entity"; }
+            public boolean doesClassExist() { return true; }
+            public byte[] getInitialClassSha256() { return new byte[0]; }
+            public java.util.List<cpw.mods.modlauncher.api.ITransformerActivity> getAuditActivities() { return java.util.List.of(); }
+            public String getReason() { return reason; }
+            public boolean applyFieldPredicate(cpw.mods.modlauncher.api.ITransformerVotingContext.FieldPredicate p) { return false; }
+            public boolean applyMethodPredicate(cpw.mods.modlauncher.api.ITransformerVotingContext.MethodPredicate p) { return false; }
+            public boolean applyClassPredicate(cpw.mods.modlauncher.api.ITransformerVotingContext.ClassPredicate p) { return false; }
+            public boolean applyInstructionPredicate(cpw.mods.modlauncher.api.ITransformerVotingContext.InsnPredicate p) { return false; }
+        };
+    }
 
     @SuppressWarnings("unchecked")
     static ITransformer<org.objectweb.asm.tree.ClassNode> cast2(ITransformer<?> t) {

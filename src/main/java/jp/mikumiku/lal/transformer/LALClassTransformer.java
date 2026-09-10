@@ -1,6 +1,7 @@
 package jp.mikumiku.lal.transformer;
 
 import cpw.mods.modlauncher.api.ITransformer;
+import cpw.mods.modlauncher.api.ITransformerActivity;
 import cpw.mods.modlauncher.api.ITransformerVotingContext;
 import cpw.mods.modlauncher.api.TransformerVoteResult;
 import java.util.LinkedHashSet;
@@ -66,7 +67,15 @@ public final class LALClassTransformer implements ITransformer<ClassNode> {
 
     @Override
     public TransformerVoteResult castVote(ITransformerVotingContext context) {
-        // Only asked about our own targets, and ModLauncher drops a transformer once applied.
+        // TransformerClassWriter.getCommonSuperClass asks ModLauncher to rebuild a class with this
+        // reason purely to resolve a supertype while computing frames for a different class. The
+        // bytes written in that pass are not the ones that get loaded (ClassTransformer drops
+        // COMPUTE_FRAMES for it), so injecting here only adds hook references that pass then has to
+        // resolve - which is how ServerLevel.tick ended up looking for Player and failing with
+        // ClassNotFoundException. The class is transformed normally at classloading time.
+        if (ITransformerActivity.COMPUTING_FRAMES_REASON.equals(context.getReason())) {
+            return TransformerVoteResult.NO;
+        }
         return TransformerVoteResult.YES;
     }
 
