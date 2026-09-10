@@ -3,6 +3,7 @@ package jp.mikumiku.lal.agent;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
 import java.lang.invoke.MethodHandles;
+import java.security.MessageDigest;
 import java.security.ProtectionDomain;
 import java.util.Set;
 import java.util.UUID;
@@ -16,6 +17,7 @@ import org.objectweb.asm.tree.*;
 public class LALAgent {
     private static final Set<String> PROTECTED_CLASSES = ConcurrentHashMap.newKeySet();
     private static volatile ClassFileTransformer lalTransformer;
+    private static final ConcurrentHashMap<String, byte[]> BYTECODE_HASHES = new ConcurrentHashMap<>();
 
     private static final Object[] _0x = new Object[4];
     private static volatile java.lang.invoke.VarHandle[] hsHandles;
@@ -31,22 +33,12 @@ public class LALAgent {
         initAgent(inst);
     }
 
-            /** For a handle obtained by self-attach, on the mod thread. */
-    public static void initInstrumentation(Instrumentation inst) {
-        initAgent(inst);
-    }
-
     public static boolean isProtected(String className) {
         return PROTECTED_CLASSES.contains(className);
     }
 
-    private static final java.util.concurrent.atomic.AtomicBoolean AGENT_INITIALIZED =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
-
     private static void initAgent(Instrumentation inst) {
-        // premain and agentmain can both run; the bootstrap append is irreversible.
         LALAgentBridge.setInstrumentation(inst);
-        if (!AGENT_INITIALIZED.compareAndSet(false, true)) return;
         captureOriginalBytecodes(inst);
         lalTransformer = new LALProtectiveTransformer();
         inst.addTransformer(lalTransformer, true);
@@ -427,32 +419,7 @@ public class LALAgent {
         PROTECTED_CLASSES.add(internalName);
     }
 
-    /**
-     * Retransforming these deoptimises every compiled method of the class, so the callers - all
-     * best-effort self-healing - are spaced.
-     */
-    private static final long MIN_RETRANSFORM_INTERVAL_MS = 5000L;
-    /**
-     * Redefining Entity/LivingEntity/Player/ServerPlayer/ServerLevel while another thread is
-     * inside Bootstrap.bootStrap() breaks class loading - the client dies with
-     * ClassNotFoundException for a vanilla class reached from a static initializer. Nothing needs
-     * repairing before the game is up, so retransformation is held off for this long.
-     */
-    private static final long STARTUP_GRACE_MS = 60_000L;
-    private static final long STARTED_AT_MS = System.currentTimeMillis();
-    private static final java.util.concurrent.atomic.AtomicLong lastRetransformMs =
-            new java.util.concurrent.atomic.AtomicLong(0L);
-
-    private static boolean claimRetransformSlot() {
-        long now = System.currentTimeMillis();
-        if (now - STARTED_AT_MS < STARTUP_GRACE_MS) return false;
-        long last = lastRetransformMs.get();
-        if (now - last < MIN_RETRANSFORM_INTERVAL_MS) return false;
-        return lastRetransformMs.compareAndSet(last, now);
-    }
-
     public static void retransformTargetClasses() {
-        if (!claimRetransformSlot()) return;
         Instrumentation inst = LALAgentBridge.getInstrumentation();
         if (inst == null) return;
 
@@ -534,6 +501,7 @@ public class LALAgent {
                     if (alreadyHooked) break;
                 }
                 if (alreadyHooked) {
+                    recordBytecodeHash(className, classfileBuffer);
                     return null;
                 }
 
@@ -551,6 +519,7 @@ public class LALAgent {
                     };
                     classNode.accept(cw);
                     byte[] result = cw.toByteArray();
+                    recordBytecodeHash(className, result);
                     return result;
                 }
             } catch (Exception ignored) {}
@@ -566,9 +535,6 @@ public class LALAgent {
                 for (MethodNode mn : cn.methods) {
                     if (("exit".equals(mn.name) || "halt".equals(mn.name))
                             && "(I)V".equals(mn.desc)) {
-                        // JVMS 4.7.3 forbids a Code attribute on a native method, and emitting one
-                        // aborted the whole Runtime retransform.
-                        if ((mn.access & Opcodes.ACC_NATIVE) != 0) continue;
                         injectExitGuard(mn);
                         modified = true;
                     }
@@ -635,6 +601,30 @@ public class LALAgent {
             mn.instructions.insert(inject);
             mn.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, catchHandler, "java/lang/Throwable"));
         }
+    }
+
+    public static void recordBytecodeHash(String className, byte[] bytecode) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            BYTECODE_HASHES.put(className, md.digest(bytecode));
+        } catch (Throwable ignored) {}
+    }
+
+    public static boolean verifyBytecodeIntegrity() {
+        Instrumentation inst = LALAgentBridge.getInstrumentation();
+        if (inst == null) return true;
+        boolean allValid = true;
+        for (String className : BYTECODE_HASHES.keySet()) {
+            try {
+                Class<?> clazz = Class.forName(className.replace('/', '.'));
+                if (inst.isModifiableClass(clazz)) {
+                    inst.retransformClasses(clazz);
+                }
+            } catch (Throwable ignored) {
+                allValid = false;
+            }
+        }
+        return allValid;
     }
 
     public static void reRegisterTransformer() {

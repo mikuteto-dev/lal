@@ -6,11 +6,6 @@ import java.util.Set;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.ClassNode;
 
-/**
- * ModLauncher only discovers ITransformationService, IModLocator, IDependencyLocator and
- * ImmediateWindowProvider from a mod jar, so this class can never be picked up; the working
- * entry point is LALTransformationService.transformers().
- */
 public class LALPlugin implements ILaunchPluginService {
     private static volatile boolean serviceInitialized = false;
 
@@ -65,13 +60,6 @@ public class LALPlugin implements ILaunchPluginService {
     public boolean processClass(Phase phase, ClassNode classNode, Type classType, String reason) {
         if (!"classloading".equals(reason)) return false;
         ensureServiceStarted();
-        // This plugin is now actually discovered (it had no META-INF/services entry, so it never
-        // ran at all). A transformer that throws here would break the class being loaded, so a
-        // failure degrades to "class left unmodified".
-        try {
-            return LALTransformer.transform(classNode, phase);
-        } catch (Throwable t) {
-            return false;
-        }
+        return LALTransformer.transform(classNode, phase);
     }
 }

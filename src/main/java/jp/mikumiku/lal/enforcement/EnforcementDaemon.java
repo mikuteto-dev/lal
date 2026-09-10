@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicLong;
 
 import jp.mikumiku.lal.LifeAuthorityLayer;
@@ -42,20 +43,6 @@ public class EnforcementDaemon {
     private static final long INTERVAL_MS_FAST = 5;
     private static final long INTERVAL_MS_ESCALATED = 1;
     private static final long INTERVAL_MS_IMMORTAL = 25;
-    private static final long INTERVAL_MS_IDLE = 250;
-    /**
-     * The two whole-VM sweeps are the most expensive work here; the registered-object path already
-     * covers the common case on every iteration.
-     */
-    private static final long THREAD_LOCAL_SCAN_INTERVAL_MS = 60_000L;
-    private static final long DEEP_SCAN_INTERVAL_MS = 120_000L;
-        private static final long OBJECT_ENFORCEMENT_INTERVAL_MS = 500L;
-    private static volatile long lastObjectEnforcementMs = 0L;
-    // Started at now, not 0: a zero timestamp made the very first loop iteration run both sweeps,
-    // which put the deep scan inside mod loading.
-    private static volatile long lastThreadLocalScanMs = System.currentTimeMillis();
-    private static volatile long lastDeepScanMs = System.currentTimeMillis();
-        private static volatile long lastMaintenanceMs = System.currentTimeMillis();
     private static volatile long escalationUntil = 0;
     private static volatile int retransformInterval = 200;
     private static volatile int consecutiveHookFailures = 0;
@@ -65,7 +52,6 @@ public class EnforcementDaemon {
     private static int loopCount = 0;
 
     private static volatile boolean poolDaemonRunning = false;
-    private static volatile Thread poolDaemonThread = null;
     private static final AtomicLong poolDaemonHeartbeat = new AtomicLong(0);
     private static final AtomicLong mainDaemonHeartbeat = new AtomicLong(0);
 
@@ -145,7 +131,6 @@ public class EnforcementDaemon {
     private static void run() {
         while (running) {
             try {
-                boolean idle = !hasWork();
                 try {
                     long interval;
                     if (System.currentTimeMillis() < escalationUntil) {
@@ -154,8 +139,6 @@ public class EnforcementDaemon {
                         interval = INTERVAL_MS_FAST;
                     } else if (!CombatRegistry.getImmortalSet().isEmpty()) {
                         interval = INTERVAL_MS_IMMORTAL;
-                    } else if (idle) {
-                        interval = INTERVAL_MS_IDLE;
                     } else {
                         interval = INTERVAL_MS_NORMAL;
                     }
@@ -177,36 +160,26 @@ public class EnforcementDaemon {
                         }
                     } catch (Throwable ignored) {}
 
-                    // Backed off while idle: the flag list is walked every iteration otherwise.
-                    if (!idle || loopCount % 40 == 0) {
-                        try {
-                            resetGlobalDisableFlags();
-                        } catch (Throwable ignored) {}
-                    }
+                    try {
+                        resetGlobalDisableFlags();
+                    } catch (Throwable ignored) {}
 
                     cleanupStaleReferences();
                     processEntities();
 
-                    // Kept while idle: this detector is what puts hidden/ghost entities into the kill set.
                     if (loopCount % 100 == 50) {
                         try {
                             detectAndNeutralizeGhostEntities();
                         } catch (Throwable ignored) {}
                     }
 
-                    // Both walk the registered object graph, which registration already damaged; at a
-                    // 5 ms loop that was 200 passes a second over the same set.
-                    long objectNow = System.currentTimeMillis();
-                    if (objectNow - lastObjectEnforcementMs >= OBJECT_ENFORCEMENT_INTERVAL_MS) {
-                        lastObjectEnforcementMs = objectNow;
-                        try {
-                            ObjectLinker.purgeKilledObjectsFromCollections();
-                        } catch (Throwable ignored) {}
+                    try {
+                        ObjectLinker.purgeKilledObjectsFromCollections();
+                    } catch (Throwable ignored) {}
 
-                        try {
-                            ObjectKillEnforcer.processAll();
-                        } catch (Throwable ignored) {}
-                    }
+                    try {
+                        ObjectKillEnforcer.processAll();
+                    } catch (Throwable ignored) {}
 
                     try {
                         KillEnforcer.restoreEventBusIfNeeded();
@@ -224,23 +197,16 @@ public class EnforcementDaemon {
                         verifyCanaryValues();
                     } catch (Throwable ignored) {}
 
-                    // Wall clock, not loop count: the loop runs up to 50x faster while the kill set is
-                    // non-empty, which would otherwise compress these into per-second sweeps.
-                    if (!idle) {
-                        long now = System.currentTimeMillis();
-                        if (now - lastThreadLocalScanMs >= THREAD_LOCAL_SCAN_INTERVAL_MS) {
-                            lastThreadLocalScanMs = now;
-                            try {
-                                scanThreadLocals();
-                            } catch (Throwable ignored) {}
-                        }
-                        if (now - lastDeepScanMs >= DEEP_SCAN_INTERVAL_MS
-                                && !CombatRegistry.getKillSet().isEmpty()) {
-                            lastDeepScanMs = now;
-                            try {
-                                deepScanAllClasses();
-                            } catch (Throwable ignored) {}
-                        }
+                    if (loopCount % 200 == 0) {
+                        try {
+                            scanThreadLocals();
+                        } catch (Throwable ignored) {}
+                    }
+
+                    if (loopCount % 500 == 0) {
+                        try {
+                            deepScanAllClasses();
+                        } catch (Throwable ignored) {}
                     }
 
                     mainDaemonHeartbeat.set(System.currentTimeMillis());
@@ -249,11 +215,7 @@ public class EnforcementDaemon {
                     }
 
                     loopCount++;
-                    // Wall clock, not loop count, so speeding the loop up cannot compress this block
-                    // (including removeTransformer/addTransformer) into a per-second cadence.
-                    long nowMs = System.currentTimeMillis();
-                    if (nowMs - lastMaintenanceMs >= retransformInterval * 50L) {
-                        lastMaintenanceMs = nowMs;
+                    if (loopCount >= retransformInterval) {
                         loopCount = 0;
                         checkHookCallsAndRetransform();
                         CombatRegistry.syncImmortalSetFromBackup();
@@ -273,14 +235,12 @@ public class EnforcementDaemon {
                         try {
                             verifyEntityManager();
                         } catch (Throwable ignored) {}
-                        if (!idle) {
-                            try {
-                                LifeAuthorityLayer.verifyFileSystemProviders();
-                            } catch (Throwable ignored) {}
-                            try {
-                                monitorHiddenClasses();
-                            } catch (Throwable ignored) {}
-                        }
+                        try {
+                            LifeAuthorityLayer.verifyFileSystemProviders();
+                        } catch (Throwable ignored) {}
+                        try {
+                            monitorHiddenClasses();
+                        } catch (Throwable ignored) {}
                         try {
                             DynamicTickRemover.applyPending();
                         } catch (Throwable ignored) {}
@@ -302,23 +262,6 @@ public class EnforcementDaemon {
         }
     }
 
-    /**
-     * Tracked is not work: every living entity is tracked, but only those in an enforcement set need
-     * anything done. This gates the whole-VM scans.
-     */
-    private static boolean hasWork() {
-        try {
-            return !CombatRegistry.getKillSet().isEmpty()
-                    || !CombatRegistry.getImmortalSet().isEmpty()
-                    || !CombatRegistry.getDeadConfirmedSet().isEmpty()
-                    || !CombatRegistry.getObjectKillSet().isEmpty()
-                    || !BreakRegistry.isEmpty()
-                    || System.currentTimeMillis() < escalationUntil;
-        } catch (Throwable t) {
-            return true;
-        }
-    }
-
     private static void cleanupStaleReferences() {
         try {
             Iterator<Map.Entry<UUID, WeakReference<LivingEntity>>> it = trackedEntities.entrySet().iterator();
@@ -337,9 +280,7 @@ public class EnforcementDaemon {
     }
 
     private static void processEntities() {
-        // Direct iteration: nothing here structurally modifies the map, and copying it every pass
-        // meant an N-entry snapshot 20-40 times a second.
-        for (Map.Entry<UUID, WeakReference<LivingEntity>> entry : trackedEntities.entrySet()) {
+        for (Map.Entry<UUID, WeakReference<LivingEntity>> entry : new java.util.ArrayList<>(trackedEntities.entrySet())) {
             try {
                 LivingEntity entity = entry.getValue().get();
                 if (entity == null) continue;
@@ -569,12 +510,10 @@ public class EnforcementDaemon {
                 triggerRetransform();
             }
         } catch (Throwable ignored) {}
-        // Loop counts, and the loop runs at 5 ms while the kill set is non-empty, so these divisors
-        // are the per-entity re-assertion rate.
-        if (loopCount % 20 == 0) {
+        if (loopCount % 5 == 0) {
             try { corruptShadowHealth(entity); } catch (Throwable ignored) {}
         }
-        if (loopCount % 100 == 0) {
+        if (loopCount % 10 == 0) {
             try {
                 if (entity.level() instanceof ServerLevel sl) {
                     LALEntityRemover.deleteFromLevel((Entity) entity, sl);
@@ -586,7 +525,7 @@ public class EnforcementDaemon {
                 }
             } catch (Throwable ignored) {}
         }
-        if (loopCount % 100 == 0) {
+        if (loopCount % 20 == 0) {
             try { ObjectKillEnforcer.neutralizeSingle(entity); } catch (Throwable ignored) {}
         }
     }
@@ -615,34 +554,6 @@ public class EnforcementDaemon {
         } catch (Throwable ignored) {}
     }
 
-    /**
-     * One snapshot shared by the four callers: getAllLoadedClasses materialises a fresh array of
-     * every loaded class each time.
-     */
-    private static final long LOADED_CLASSES_TTL_MS = 10_000L;
-    private static volatile Class<?>[] loadedClassesCache;
-    private static volatile long loadedClassesAtMs = 0L;
-
-    private static Class<?>[] loadedClasses(Instrumentation inst) {
-        Class<?>[] cached = loadedClassesCache;
-        long now = System.currentTimeMillis();
-        if (cached != null && now - loadedClassesAtMs < LOADED_CLASSES_TTL_MS) {
-            return cached;
-        }
-        try {
-            Class<?>[] all = inst.getAllLoadedClasses();
-            loadedClassesCache = all;
-            loadedClassesAtMs = now;
-            return all;
-        } catch (Throwable t) {
-            return cached != null ? cached : new Class<?>[0];
-        }
-    }
-
-            /** That state does not change on a 25 ms cadence. */
-    private static final long EXTERNAL_HEALTH_SCAN_INTERVAL_MS = 1000L;
-    private static final AtomicLong lastExternalHealthScanMs = new AtomicLong(0L);
-
     @SuppressWarnings("unchecked")
     private static void corruptExternalHealthStorage(LivingEntity entity) {
         try {
@@ -650,25 +561,16 @@ public class EnforcementDaemon {
             if (inst == null) return;
             String entityPackage = entity.getClass().getPackageName();
             if (entityPackage.startsWith("net.minecraft.") || entityPackage.startsWith("jp.mikumiku.lal.")) return;
-            long now = System.currentTimeMillis();
-            long last = lastExternalHealthScanMs.get();
-            if (now - last < EXTERNAL_HEALTH_SCAN_INTERVAL_MS) return;
-            if (!lastExternalHealthScanMs.compareAndSet(last, now)) return;
             String modPrefix = entityPackage.contains(".") ?
                     entityPackage.substring(0, entityPackage.indexOf('.', entityPackage.indexOf('.') + 1) + 1) :
                     entityPackage;
-            for (Class<?> clazz : loadedClasses(inst)) {
+            for (Class<?> clazz : inst.getAllLoadedClasses()) {
                 try {
                     if (!clazz.getName().startsWith(modPrefix)) continue;
                     for (java.lang.reflect.Field f : FieldAccessUtil.safeGetDeclaredFields(clazz)) {
                         if (!java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
                         try {
                             f.setAccessible(true);
-                            // Reading a static field initialises its class, and these are other
-                            // mods' classes: doing it before they are ready leaves the class in the
-                            // failed-initialisation state for the rest of the session (the client
-                            // died with "Could not initialize class Zombie"). Hence the kill-set
-                            // and interval gates above.
                             Object val = f.get(null);
                             if (val == null) continue;
                             if (val instanceof java.util.WeakHashMap) {
@@ -805,21 +707,15 @@ public class EnforcementDaemon {
         } catch (Throwable t) {}
     }
 
-    /**
-     * Floor for the interval: at 1 the whole maintenance block ran at the loop rate forever, because
-     * the condition that raised it never clears while it is being hammered.
-     */
-    private static final int MIN_RETRANSFORM_INTERVAL = 100;
-
     private static void checkHookCallsAndRetransform() {
         try {
             long calls = EntityMethodHooks.getAndResetHookCallCount();
             if (calls == 0 && !trackedEntities.isEmpty()) {
                 consecutiveHookFailures++;
                 if (consecutiveHookFailures >= 5) {
-                    retransformInterval = MIN_RETRANSFORM_INTERVAL;
+                    retransformInterval = 1;
                 } else if (consecutiveHookFailures >= 2) {
-                    retransformInterval = MIN_RETRANSFORM_INTERVAL * 2;
+                    retransformInterval = 5;
                 }
                 triggerRetransform();
                 escalate();
@@ -1153,11 +1049,9 @@ public class EnforcementDaemon {
         }
         for (ResetTarget target : globalFlagTargets) {
             try {
-                // Unsafe, not Field.getBoolean(null): the reflective read initialises the declaring
-                // class, and these are other mods' classes collected while mod loading may still be
-                // in progress.
-                if (FieldAccessUtil.unsafeGetStaticBoolean(target.field)) {
-                    FieldAccessUtil.unsafeSetStaticBoolean(target.field, false);
+                boolean val = target.field.getBoolean(null);
+                if (val) {
+                    target.field.setBoolean(null, false);
                 }
             } catch (Throwable ignored) {}
         }
@@ -1168,7 +1062,7 @@ public class EnforcementDaemon {
             Instrumentation inst = LALAgentBridge.getInstrumentation();
             if (inst == null) return;
             LALAgent.monitorClassScanning();
-            Class<?>[] classes = loadedClasses(inst);
+            Class<?>[] classes = inst.getAllLoadedClasses();
             for (Class<?> clazz : classes) {
                 try {
                     String name = clazz.getName();
@@ -1202,7 +1096,7 @@ public class EnforcementDaemon {
         try {
             Instrumentation inst = LALAgentBridge.getInstrumentation();
             if (inst == null) return;
-            Class<?>[] allClasses = loadedClasses(inst);
+            Class<?>[] allClasses = inst.getAllLoadedClasses();
             int hiddenCount = 0;
             for (Class<?> clazz : allClasses) {
                 try {
@@ -1221,9 +1115,23 @@ public class EnforcementDaemon {
 
     private static void triggerRetransform() {
         try {
-            // Delegated: LALAgent.retransformTargetClasses enforces the spacing that keeps
-            // redefining Entity/LivingEntity/ServerLevel from deoptimising them constantly.
-            jp.mikumiku.lal.agent.LALAgent.retransformTargetClasses();
+            Instrumentation inst = LALAgentBridge.getInstrumentation();
+            if (inst == null) return;
+
+            Class<?>[] targets = {
+                Entity.class,
+                LivingEntity.class,
+                Player.class,
+                ServerPlayer.class,
+                ServerLevel.class
+            };
+
+            for (Class<?> target : targets) {
+                try {
+                    inst.retransformClasses(target);
+                } catch (Throwable t) {
+                }
+            }
         } catch (Throwable t) {
         }
     }
@@ -1333,13 +1241,9 @@ public class EnforcementDaemon {
 
     private static void deepScanAllClasses() {
         try {
-            // Keyed by identity hash code and otherwise never pruned.
-            try {
-                deepScanCache.entrySet().removeIf(e -> e.getValue() == null || e.getValue().get() == null);
-            } catch (Throwable ignored) {}
             Instrumentation inst = LALAgentBridge.getInstrumentation();
             if (inst == null) return;
-            Class<?>[] allClasses = loadedClasses(inst);
+            Class<?>[] allClasses = inst.getAllLoadedClasses();
             for (Class<?> clazz : allClasses) {
                 try {
                     String name = clazz.getName();
@@ -1354,11 +1258,6 @@ public class EnforcementDaemon {
                         try {
                             if (!java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
                             f.setAccessible(true);
-                            // Reading a static field initialises its class, and these are other
-                            // mods' classes: doing it before they are ready leaves the class in the
-                            // failed-initialisation state for the rest of the session (the client
-                            // died with "Could not initialize class Zombie"). Hence the kill-set
-                            // and interval gates above.
                             Object val = f.get(null);
                             if (val == null) continue;
 
@@ -1429,35 +1328,20 @@ public class EnforcementDaemon {
         }
     }
 
-    private static final long POOL_HEARTBEAT_TIMEOUT_MS = 5000;
-    private static final long MAIN_HEARTBEAT_TIMEOUT_MS = 3000;
-
     public static void ensurePoolDaemonRunning() {
-        Thread current = poolDaemonThread;
-        if (current != null && current.isAlive()
-                && System.currentTimeMillis() - poolDaemonHeartbeat.get() < POOL_HEARTBEAT_TIMEOUT_MS) {
-            return;
-        }
-        synchronized (EnforcementDaemon.class) {
-            if (poolDaemonThread != null && poolDaemonThread.isAlive()
-                    && System.currentTimeMillis() - poolDaemonHeartbeat.get() < POOL_HEARTBEAT_TIMEOUT_MS) {
+        if (poolDaemonRunning) {
+            long lastBeat = poolDaemonHeartbeat.get();
+            if (lastBeat > 0 && System.currentTimeMillis() - lastBeat < 5000) {
                 return;
             }
-            poolDaemonHeartbeat.set(System.currentTimeMillis());
-            poolDaemonRunning = true;
-            // A dedicated thread: an endless loop on ForkJoinPool.commonPool() occupies a shared
-            // worker permanently.
-            Thread thread = new Thread(EnforcementDaemon::poolDaemonLoop,
-                    "Thread-" + UUID.randomUUID().toString().substring(0, 8));
-            thread.setDaemon(true);
-            thread.setPriority(Thread.NORM_PRIORITY);
-            poolDaemonThread = thread;
+        }
+        poolDaemonRunning = true;
+        try {
+            ForkJoinPool.commonPool().execute(EnforcementDaemon::poolDaemonLoop);
+        } catch (Throwable t) {
             try {
-                thread.start();
-            } catch (Throwable t) {
-                poolDaemonRunning = false;
-                poolDaemonThread = null;
-            }
+                new Thread(EnforcementDaemon::poolDaemonLoop).start();
+            } catch (Throwable ignored) {}
         }
     }
 
@@ -1472,38 +1356,29 @@ public class EnforcementDaemon {
             try {
                 poolDaemonHeartbeat.set(System.currentTimeMillis());
                 long mainBeat = mainDaemonHeartbeat.get();
-                boolean mainStalled = mainBeat > 0
-                        && System.currentTimeMillis() - mainBeat > MAIN_HEARTBEAT_TIMEOUT_MS;
-                if (mainStalled) {
-                    // Failover only; running it unconditionally duplicated the main loop.
+                if (mainBeat > 0 && System.currentTimeMillis() - mainBeat > 3000) {
                     ensureRunning();
-                    enforceTrackedEntities();
                 }
                 try { DaemonWatchdog.start(); } catch (Throwable ignored) {}
+                for (Map.Entry<UUID, WeakReference<LivingEntity>> entry : trackedEntities.entrySet()) {
+                    try {
+                        LivingEntity entity = entry.getValue().get();
+                        if (entity == null) continue;
+                        UUID uuid = entry.getKey();
+                        if (CombatRegistry.isInImmortalSet(uuid)) {
+                            enforceImmortal(entity);
+                        } else if (CombatRegistry.isInKillSet(uuid)) {
+                            enforceKill(entity);
+                        }
+                    } catch (Throwable ignored) {}
+                }
+                try {
+                    CombatRegistry.cleanupDeadObjectRefs();
+                } catch (Throwable ignored) {}
             } catch (ThreadDeath td) {
                 continue;
             } catch (Throwable ignored) {}
         }
         poolDaemonRunning = false;
-        synchronized (EnforcementDaemon.class) {
-            if (poolDaemonThread == Thread.currentThread()) {
-                poolDaemonThread = null;
-            }
-        }
-    }
-
-    private static void enforceTrackedEntities() {
-        for (Map.Entry<UUID, WeakReference<LivingEntity>> entry : trackedEntities.entrySet()) {
-            try {
-                LivingEntity entity = entry.getValue().get();
-                if (entity == null) continue;
-                UUID uuid = entry.getKey();
-                if (CombatRegistry.isInImmortalSet(uuid)) {
-                    enforceImmortal(entity);
-                } else if (CombatRegistry.isInKillSet(uuid)) {
-                    enforceKill(entity);
-                }
-            } catch (Throwable ignored) {}
-        }
     }
 }

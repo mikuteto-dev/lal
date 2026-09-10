@@ -43,10 +43,6 @@ public class BreakRegistry {
         return STATES.containsKey(uuid);
     }
 
-    public static boolean isEmpty() {
-        return STATES.isEmpty();
-    }
-
     public static float getHealthCap(UUID uuid) {
         BreakState state = STATES.get(uuid);
         return state != null ? state.healthCap : Float.MAX_VALUE;

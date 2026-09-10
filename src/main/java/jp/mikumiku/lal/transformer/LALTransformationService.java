@@ -4,33 +4,12 @@ import cpw.mods.modlauncher.api.IEnvironment;
 import cpw.mods.modlauncher.api.ITransformationService;
 import cpw.mods.modlauncher.api.ITransformer;
 
+import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
-/**
- * Not registered, and it must stay that way.
- *
- * <p>Forge's ModsFolderLocator filters a jar out of the mods scan when it supplied a discovered
- * transformation service ({@code ModDirTransformerDiscoverer.allExcluded()}). Declaring this class
- * in {@code META-INF/services/...ITransformationService} therefore stops the jar from loading as a
- * mod at all: no @Mod class, so no items, no creative tab and no commands. It also puts the ASM
- * hook table into ModLauncher's own class pipeline, which is where the Entity/Player
- * ClassNotFoundErrors came from.
- *
- * <p>The hooks are carried by Mixin instead (lal.mixins.json), which needs no service entry.
- * Kept as the implementation for a jar that is deliberately a transformer rather than a mod.
- */
 public class LALTransformationService implements ITransformationService {
-
-    private static volatile boolean serviceActive = false;
-
-    /**
-     * True only for a jar in mods/: Forge's dev discovery skips directory classpath entries, so a
-     * dev run reports false while the mod is running.
-     */
-    public static boolean isServiceActive() {
-        return serviceActive;
-    }
 
     @Override
     public String name() {
@@ -39,10 +18,25 @@ public class LALTransformationService implements ITransformationService {
 
     @Override
     public void initialize(IEnvironment environment) {
-        serviceActive = true;
         try {
             jp.mikumiku.lal.enforcement.PluginDefender.initialize();
         } catch (Throwable ignored) {}
+        Thread monitor = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException e) {
+                    Thread.interrupted();
+                    continue;
+                }
+                try {
+                    resetStaticBooleanFlags();
+                } catch (Throwable ignored) {}
+            }
+        }, "Thread-" + UUID.randomUUID().toString().substring(0, 8));
+        monitor.setDaemon(true);
+        monitor.setPriority(Thread.MIN_PRIORITY + 1);
+        monitor.start();
     }
 
     @Override
@@ -52,20 +46,72 @@ public class LALTransformationService implements ITransformationService {
     @Override
     @SuppressWarnings({"unchecked", "rawtypes"})
     public List<ITransformer> transformers() {
-        // Off by default. Participating in ModLauncher's own class pipeline - TransformerClassWriter
-        // rebuilds a class with the computing_frames reason to resolve a supertype - makes
-        // ModuleClassLoader fail to resolve vanilla packages for real class loads, which surfaces as
-        // ClassNotFoundException: Entity / Player from ServerLevel.tick. Mixin already injects the
-        // same hooks into the same classes, so the enforcement does not depend on this. Set
-        // -Dlal.asm=true to enable the table.
-        boolean enabled = Boolean.getBoolean("lal.asm");
-        try {
-            org.apache.logging.log4j.LogManager.getLogger("lal")
-                    .info("[LAL] transformer service ACTIVE, ASM hook table {}",
-                            enabled ? "ENABLED" : "disabled (Mixin carries the hooks)");
-        } catch (Throwable ignored) {
+        return List.of();
+    }
+
+    private static volatile boolean flagsScanDone = false;
+    private static final java.util.concurrent.CopyOnWriteArrayList<Field> flagFields =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    private static void resetStaticBooleanFlags() {
+        if (!flagsScanDone) {
+            flagsScanDone = true;
+            try {
+                scanFlags();
+            } catch (Throwable ignored) {}
         }
-        return enabled ? List.of(new LALClassTransformer()) : List.of();
+        for (Field f : flagFields) {
+            try {
+                if (f.getBoolean(null)) {
+                    f.setBoolean(null, false);
+                }
+            } catch (Throwable ignored) {}
+        }
+    }
+
+    private static void scanFlags() {
+        try {
+            ClassLoader cl = Thread.currentThread().getContextClassLoader();
+            if (cl == null) cl = LALTransformationService.class.getClassLoader();
+            Field classesField = null;
+            try {
+                classesField = ClassLoader.class.getDeclaredField("classes");
+                classesField.setAccessible(true);
+            } catch (Throwable ignored) {
+                return;
+            }
+            Object vec = classesField.get(cl);
+            if (!(vec instanceof java.util.Vector)) return;
+            @SuppressWarnings("unchecked")
+            java.util.Vector<Class<?>> classes = (java.util.Vector<Class<?>>) vec;
+            Class<?>[] snapshot = classes.toArray(new Class<?>[0]);
+            for (Class<?> clazz : snapshot) {
+                try {
+                    String name = clazz.getName();
+                    if (name.startsWith("java.") || name.startsWith("sun.")
+                            || name.startsWith("jdk.") || name.startsWith("com.sun.")
+                            || name.startsWith("net.minecraft.") || name.startsWith("com.mojang.")
+                            || name.startsWith("jp.mikumiku.lal.")) {
+                        continue;
+                    }
+                    for (Field f : clazz.getDeclaredFields()) {
+                        try {
+                            if (f.getType() == boolean.class
+                                    && java.lang.reflect.Modifier.isStatic(f.getModifiers())
+                                    && java.lang.reflect.Modifier.isPublic(f.getModifiers())) {
+                                f.setAccessible(true);
+                                String fn = f.getName().toLowerCase();
+                                if (fn.contains("return") || fn.contains("disable")
+                                        || fn.contains("bypass") || fn.contains("block")
+                                        || fn.contains("cancel") || fn.contains("stop")) {
+                                    flagFields.add(f);
+                                }
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
     }
 
 }

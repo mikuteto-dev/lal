@@ -6,46 +6,16 @@ import java.util.concurrent.atomic.AtomicInteger;
 import jp.mikumiku.lal.agent.LALAgent;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.Opcodes;
-import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.*;
 
 public class LALTransformer {
     private static final String HOOKS = "jp/mikumiku/lal/transformer/EntityMethodHooks";
-
-    /**
-     * Covers the widest injected prologue: receiver plus three doubles (7 slots), when the writer
-     * does not recompute maxs.
-     */
-    private static final int INJECTED_STACK_HEADROOM = 8;
-
     private static boolean initialized = false;
     private static final AtomicInteger transformedClasses = new AtomicInteger(0);
     private static final AtomicInteger transformedMethods = new AtomicInteger(0);
     private static final AtomicInteger skippedClasses = new AtomicInteger(0);
     private static final java.util.concurrent.ConcurrentHashMap<String, Set<String>> HEAD_INJECTED =
             new java.util.concurrent.ConcurrentHashMap<>();
-
-    /**
-     * Computed once per class: LALPlugin asked for both phases and each phase re-scanned every
-     * instruction of every method, with a result that cannot differ between them.
-     */
-    private static final int SCAN_METHOD_REF = 1;
-    private static final int SCAN_FIELD_REF = 2;
-    private static final int SCAN_CACHE_MAX = 200_000;
-    private static final java.util.concurrent.ConcurrentHashMap<String, Integer> SCAN_CACHE =
-            new java.util.concurrent.ConcurrentHashMap<>();
-
-    private static int scanFlags(ClassNode classNode, boolean isMinecraftClass) {
-        Integer cached = SCAN_CACHE.get(classNode.name);
-        if (cached != null) return cached;
-        int flags = 0;
-        if (hasTargetMethodReference(classNode, isMinecraftClass)) flags |= SCAN_METHOD_REF;
-        if (hasEntityLookupFieldReference(classNode)) flags |= SCAN_FIELD_REF;
-        if (SCAN_CACHE.size() < SCAN_CACHE_MAX) {
-            SCAN_CACHE.put(classNode.name, flags);
-        }
-        return flags;
-    }
 
 
     enum HookType {
@@ -205,7 +175,7 @@ public class LALTransformer {
 
     private static final List<MethodMapping> METHOD_MAPPINGS = new ArrayList<>();
     private static final Set<String> TARGET_SIGS = new HashSet<>();
-    private static final Set<String> TARGET_SRG_SIGS = new HashSet<>();
+    private static final Set<String> TARGET_METHOD_NAMES = new HashSet<>();
 
     static {
         add(new MethodMapping.Builder("m_21223_", "getHealth", "()F", ReturnType.FLOAT)
@@ -357,9 +327,7 @@ public class LALTransformer {
 
         add(new MethodMapping.Builder("m_46653_", "guardEntityTick",
                 "(Ljava/util/function/Consumer;Lnet/minecraft/world/entity/Entity;)V", ReturnType.VOID)
-                // Local 1 is the Consumer and local 2 the entity, so 1 made the hook's
-                // instanceof check always fail.
-                .headNoCancel("onGuardEntityTick", "(Ljava/lang/Object;Ljava/lang/Object;)V", 2)
+                .headNoCancel("onGuardEntityTick", "(Ljava/lang/Object;Ljava/lang/Object;)V", 1)
                 .build());
 
         add(new MethodMapping.Builder("m_142391_", "shouldBeSaved", "()Z", ReturnType.BOOLEAN)
@@ -545,8 +513,8 @@ public class LALTransformer {
         METHOD_MAPPINGS.add(mapping);
         TARGET_SIGS.add(mapping.srgName + mapping.descriptor);
         TARGET_SIGS.add(mapping.mcpName + mapping.descriptor);
-        // The runtime name only appears on vanilla members, so it is safe to match anywhere.
-        TARGET_SRG_SIGS.add(mapping.srgName + mapping.descriptor);
+        TARGET_METHOD_NAMES.add(mapping.srgName);
+        TARGET_METHOD_NAMES.add(mapping.mcpName);
     }
 
     public LALTransformer() {
@@ -579,12 +547,8 @@ public class LALTransformer {
             modified |= processSelfDefense(classNode);
         }
 
-        // Definition hooks replace a vanilla body, and matching is only name+descriptor, so without
-        // this a mod class that merely declares tick()/getHealth()/setDirty(Z)V gets entity semantics.
-        boolean isMinecraftClass = classNode.name.startsWith("net/minecraft/");
-        int scan = scanFlags(classNode, isMinecraftClass);
-        boolean hasMethodRef = (scan & SCAN_METHOD_REF) != 0;
-        boolean hasFieldRef = (scan & SCAN_FIELD_REF) != 0;
+        boolean hasMethodRef = hasTargetMethodReference(classNode);
+        boolean hasFieldRef = hasEntityLookupFieldReference(classNode);
         if (!hasMethodRef && !hasFieldRef) {
             if (!modified) {
                 skippedClasses.incrementAndGet();
@@ -600,18 +564,15 @@ public class LALTransformer {
 
             if (doReturn) {
                 if (hasMethodRef) {
-                    // Enabled for every class: a mod reading a vanilla getter still needs this.
                     methodModified |= processCallsites(method);
-                    if (isMinecraftClass) {
-                        methodModified |= processReturnHooks(method);
-                    }
+                    methodModified |= processReturnHooks(method);
                 }
                 if (hasFieldRef) {
                     methodModified |= processEntityLookupFields(method);
                 }
             }
 
-            if (doHead && hasMethodRef && isMinecraftClass) {
+            if (doHead && hasMethodRef) {
                 boolean headInjected = processHeadInjection(method);
                 methodModified |= headInjected;
                 methodModified |= processTailInjection(method);
@@ -622,7 +583,7 @@ public class LALTransformer {
             }
 
             if (methodModified) {
-                method.maxStack += INJECTED_STACK_HEADROOM;
+                method.maxStack += 4;
                 transformedMethods.incrementAndGet();
                 modified = true;
             }
@@ -643,12 +604,24 @@ public class LALTransformer {
                         for (MethodNode method : classNode.methods) {
                             if ((method.name + method.desc).equals(methodKey)) {
                                 if (processHeadInjection(method)) {
-                                    method.maxStack += INJECTED_STACK_HEADROOM;
+                                    method.maxStack += 4;
                                     modified = true;
                                 }
                                 break;
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        if (doHead && hasMethodRef) {
+            for (MethodNode method : classNode.methods) {
+                if ("<init>".equals(method.name) && method.instructions.size() > 0) {
+                    if (injectConstructorHook(method)) {
+                        method.maxStack += 2;
+                        transformedMethods.incrementAndGet();
+                        modified = true;
                     }
                 }
             }
@@ -681,7 +654,6 @@ public class LALTransformer {
             MethodInsnNode mi = (MethodInsnNode) insn;
             int opcode = mi.getOpcode();
             if (opcode != Opcodes.INVOKEVIRTUAL && opcode != Opcodes.INVOKEINTERFACE) continue;
-            if (!isVanillaOwner(mi.owner)) continue;
             String sig = mi.name + mi.desc;
             if (!TARGET_SIGS.contains(sig)) continue;
             MethodMapping mapping = findMappingForCallsite(mi.name, mi.desc);
@@ -698,14 +670,6 @@ public class LALTransformer {
             modified = true;
         }
         return modified;
-    }
-
-    /**
-     * A call whose owner is a mod class that merely shares the name and descriptor must not be
-     * wrapped: the hook descriptors assume the vanilla receiver.
-     */
-    private static boolean isVanillaOwner(String internalName) {
-        return internalName != null && internalName.startsWith("net/minecraft/");
     }
 
     private static boolean processReturnHooks(MethodNode method) {
@@ -777,8 +741,6 @@ public class LALTransformer {
         InsnList patch = new InsnList();
 
         if (mapping.headJudgeDesc != null && mapping.headJudgeDesc.contains("Ljava/lang/Object;Ljava/lang/Object;")) {
-            // The judge wants the first argument, so a no-argument method cannot supply it.
-            if (argSlots(method) < 1) return false;
             patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
             patch.add(new VarInsnNode(Opcodes.ALOAD, 1));
             patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
@@ -804,13 +766,29 @@ public class LALTransformer {
         if (mapping.headJudgeMethod == null) return false;
         if (method.instructions.size() == 0 || method.instructions.getFirst() == null) return false;
 
-        String desc = mapping.headJudgeDesc != null ? mapping.headJudgeDesc : "(Ljava/lang/Object;)Z";
         LabelNode skipLabel = new LabelNode(new Label());
         InsnList patch = new InsnList();
+        String desc = mapping.headJudgeDesc != null ? mapping.headJudgeDesc : "(Ljava/lang/Object;)Z";
 
-        patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        if (!pushHeadVoidOperands(patch, method, desc)) return false;
-        patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS, mapping.headJudgeMethod, desc, false));
+        if ("(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z".equals(desc)) {
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 2));
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS, mapping.headJudgeMethod, desc, false));
+        } else if ("(Ljava/lang/Object;Ljava/lang/Object;)Z".equals(desc)) {
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS, mapping.headJudgeMethod, desc, false));
+        } else if ("(Ljava/lang/Object;DDD)Z".equals(desc)) {
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            patch.add(new VarInsnNode(Opcodes.DLOAD, 1));
+            patch.add(new VarInsnNode(Opcodes.DLOAD, 3));
+            patch.add(new VarInsnNode(Opcodes.DLOAD, 5));
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS, mapping.headJudgeMethod, desc, false));
+        } else {
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS, mapping.headJudgeMethod, desc, false));
+        }
 
         patch.add(new JumpInsnNode(Opcodes.IFEQ, skipLabel));
         patch.add(new InsnNode(Opcodes.RETURN));
@@ -820,37 +798,9 @@ public class LALTransformer {
         return true;
     }
 
-    /**
-     * Operands come from the hook's own descriptor. Hand-written branches missed (Object;Z) and
-     * emitted a call with a missing operand, which the verifier rejects at class load. Returns
-     * false when the method cannot supply what the hook wants, so a bad table entry degrades to
-     * "not applied".
-     */
-    private static boolean pushHeadVoidOperands(InsnList patch, MethodNode method, String hookDesc) {
-        final String receiver = "(Ljava/lang/Object;";
-        if (!hookDesc.startsWith(receiver) || !hookDesc.endsWith(")Z")) return false;
-        String params = hookDesc.substring(receiver.length(), hookDesc.length() - 2);
-        Type[] wanted = params.isEmpty() ? new Type[0] : Type.getArgumentTypes("(" + params + ")V");
-        if (wanted.length == 0) return true;
-
-        Type[] actual = Type.getArgumentTypes(method.desc);
-        if (actual.length != wanted.length) return false;
-
-        int slot = 1;
-        for (int i = 0; i < actual.length; i++) {
-            // Compare load categories: Object accepts any reference, and ILOAD covers
-            // boolean/byte/char/short.
-            if (wanted[i].getOpcode(Opcodes.ILOAD) != actual[i].getOpcode(Opcodes.ILOAD)) return false;
-            patch.add(new VarInsnNode(actual[i].getOpcode(Opcodes.ILOAD), slot));
-            slot += actual[i].getSize();
-        }
-        return true;
-    }
-
     private static boolean injectHeadNoCancel(MethodNode method, MethodMapping mapping) {
         if (mapping.headNoCancelMethod == null) return false;
         if (method.instructions.size() == 0 || method.instructions.getFirst() == null) return false;
-        if (mapping.headNoCancelArgSlots > 0 && mapping.headNoCancelArgSlots > argSlots(method)) return false;
 
         InsnList patch = new InsnList();
         patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
@@ -866,12 +816,23 @@ public class LALTransformer {
         return true;
     }
 
-        private static int argSlots(MethodNode method) {
-        int slots = 0;
-        for (Type t : Type.getArgumentTypes(method.desc)) {
-            slots += t.getSize();
+    private static boolean injectConstructorHook(MethodNode method) {
+        if (method.instructions.size() == 0) return false;
+        ArrayList<AbstractInsnNode> returns = new ArrayList<>();
+        for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            if (insn.getOpcode() == Opcodes.RETURN) {
+                returns.add(insn);
+            }
         }
-        return slots;
+        if (returns.isEmpty()) return false;
+        for (AbstractInsnNode returnInsn : returns) {
+            InsnList patch = new InsnList();
+            patch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            patch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOKS,
+                    "onEntityConstructed", "(Ljava/lang/Object;)V", false));
+            method.instructions.insertBefore(returnInsn, patch);
+        }
+        return true;
     }
 
     private static boolean processTailInjection(MethodNode method) {
@@ -884,7 +845,6 @@ public class LALTransformer {
     private static boolean injectTailNoCancel(MethodNode method, MethodMapping mapping) {
         if (mapping.tailNoCancelMethod == null) return false;
         if (method.instructions.size() == 0) return false;
-        if (mapping.tailNoCancelArgSlots > 0 && mapping.tailNoCancelArgSlots > argSlots(method)) return false;
         ArrayList<AbstractInsnNode> returns = new ArrayList<>();
         for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
             if (insn.getOpcode() == Opcodes.RETURN) {
@@ -928,18 +888,15 @@ public class LALTransformer {
         return null;
     }
 
-    /**
-     * Definition hooks rewrite a vanilla body, so the readable name is matched only for vanilla
-     * classes; call sites are matched against either name but only for a vanilla callee owner.
-     */
-    private static boolean hasTargetMethodReference(ClassNode classNode, boolean isMinecraftClass) {
+    private static boolean hasTargetMethodReference(ClassNode classNode) {
         for (MethodNode method : classNode.methods) {
-            if (TARGET_SRG_SIGS.contains(method.name + method.desc)) return true;
-            if (isMinecraftClass && TARGET_SIGS.contains(method.name + method.desc)) return true;
+            if (TARGET_METHOD_NAMES.contains(method.name) && TARGET_SIGS.contains(method.name + method.desc)) {
+                return true;
+            }
             for (AbstractInsnNode insn : method.instructions) {
                 if (!(insn instanceof MethodInsnNode)) continue;
                 MethodInsnNode mi = (MethodInsnNode) insn;
-                if (!isVanillaOwner(mi.owner)) continue;
+                if (!TARGET_METHOD_NAMES.contains(mi.name)) continue;
                 if (TARGET_SIGS.contains(mi.name + mi.desc)) return true;
             }
         }
