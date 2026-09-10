@@ -40,6 +40,10 @@ java -cp "$OUT:$CP" TargetCheck
 echo "== RealClassCheck: transform the real Minecraft classes and verify them =="
 java -cp "$OUT:$CP" RealClassCheck
 
+echo "== EarlyInitCheck: no injected method is reachable from a <clinit> =="
+MCJAR=$(find "$HOME/.gradle/caches/forge_gradle" "$ROOT/build/fg_cache" -name 'forge-*_mapped_official_1.20.1.jar' 2>/dev/null | head -1)
+java -cp "$OUT:$CP" EarlyInitCheck "$MCJAR"
+
 echo "== DiscoveryCheck2: Forge's real mod-jar discovery against a simulated mods/ install =="
-JAR=$(ls -t "$ROOT"/build/libs/*.jar | head -1)
+JAR=$(ls -t "$ROOT"/build/libs/lal-*.jar | grep -v no-transformer | head -1)
 java $OPENS -cp "$OUT:$CP" DiscoveryCheck2 "$JAR"

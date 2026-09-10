@@ -14,7 +14,17 @@ import org.objectweb.asm.tree.ClassNode;
  */
 public final class LALClassTransformer implements ITransformer<ClassNode> {
 
-        private static final String[] TARGETS = {
+    /**
+     * SynchedEntityData and its DataItem are deliberately absent. Entity.<clinit> calls
+     * SynchedEntityData.defineId, whose first instructions are an unguarded
+     * Thread.getStackTrace() and Class.forName - the pattern processSelfDefence keys on. A hook
+     * call injected there runs while Entity is still initialising, so the hook class loads during
+     * Bootstrap and pulls Player in behind it, and the client dies with
+     * ClassNotFoundException: Player before any window appears. SynchedEntityData.set,
+     * DataItem.setValue and DataItem.setDirty are already covered by SynchedEntityDataMixin and
+     * SynchedEntityDataItemMixin.
+     */
+    private static final String[] TARGETS = {
             "net.minecraft.world.entity.Entity",
             "net.minecraft.world.entity.LivingEntity",
             "net.minecraft.world.entity.Mob",
@@ -31,18 +41,18 @@ public final class LALClassTransformer implements ITransformer<ClassNode> {
             "net.minecraft.world.level.entity.EntityTickList",
             "net.minecraft.world.level.entity.PersistentEntitySectionManager",
             "net.minecraft.world.level.entity.PersistentEntitySectionManager$Callback",
-            "net.minecraft.network.syncher.SynchedEntityData",
-            "net.minecraft.network.syncher.SynchedEntityData$DataItem",
             "net.minecraftforge.fml.ModList",
     };
 
-            /** Client-only; a dedicated server never loads them. */
+    /**
+     * Client-only; a dedicated server never loads them.
+     */
     private static final String[] CLIENT_TARGETS = {
             "net.minecraft.client.renderer.LevelRenderer",
             "net.minecraft.client.renderer.GameRenderer",
     };
 
-            /** For the target-name check; client-only names do not resolve on a server. */
+    /** For the target-name check; client-only names do not resolve on a server. */
     public static String[] targetsForValidation() {
         return TARGETS.clone();
     }

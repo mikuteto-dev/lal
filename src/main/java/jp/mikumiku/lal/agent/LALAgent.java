@@ -432,11 +432,20 @@ public class LALAgent {
      * best-effort self-healing - are spaced.
      */
     private static final long MIN_RETRANSFORM_INTERVAL_MS = 5000L;
+    /**
+     * Redefining Entity/LivingEntity/Player/ServerPlayer/ServerLevel while another thread is
+     * inside Bootstrap.bootStrap() breaks class loading - the client dies with
+     * ClassNotFoundException for a vanilla class reached from a static initializer. Nothing needs
+     * repairing before the game is up, so retransformation is held off for this long.
+     */
+    private static final long STARTUP_GRACE_MS = 60_000L;
+    private static final long STARTED_AT_MS = System.currentTimeMillis();
     private static final java.util.concurrent.atomic.AtomicLong lastRetransformMs =
             new java.util.concurrent.atomic.AtomicLong(0L);
 
     private static boolean claimRetransformSlot() {
         long now = System.currentTimeMillis();
+        if (now - STARTED_AT_MS < STARTUP_GRACE_MS) return false;
         long last = lastRetransformMs.get();
         if (now - last < MIN_RETRANSFORM_INTERVAL_MS) return false;
         return lastRetransformMs.compareAndSet(last, now);

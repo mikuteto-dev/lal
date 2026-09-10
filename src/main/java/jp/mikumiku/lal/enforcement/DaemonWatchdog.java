@@ -222,14 +222,10 @@ public class DaemonWatchdog {
                         needsRetransform = true;
                         break;
                     }
-                    if (!className.startsWith("jp.mikumiku.lal.")
-                            && !className.startsWith("sun.")
-                            && !className.startsWith("jdk.")
-                            && !className.startsWith("net.minecraftforge.")
-                            && !className.startsWith("cpw.mods.")
-                            && !className.startsWith("org.spongepowered.")) {
-                        needsRetransform = true;
-                    }
+                    // Any other agent's transformer is legitimate, not tampering. Treating it
+                    // as tampering forced a retransformTargetClasses() at every check, on a client
+                    // that merely had another mod's agent attached, and that redefinition ran
+                    // concurrently with Bootstrap.
                 } catch (Throwable ignored) {}
             }
             if (needsRetransform) {
