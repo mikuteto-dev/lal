@@ -39,12 +39,20 @@ public class LALTransformationService implements ITransformationService {
     @Override
     @SuppressWarnings({"unchecked", "rawtypes"})
     public List<ITransformer> transformers() {
+        // Off by default. Participating in ModLauncher's own class pipeline - TransformerClassWriter
+        // rebuilds a class with the computing_frames reason to resolve a supertype - makes
+        // ModuleClassLoader fail to resolve vanilla packages for real class loads, which surfaces as
+        // ClassNotFoundException: Entity / Player from ServerLevel.tick. Mixin already injects the
+        // same hooks into the same classes, so the enforcement does not depend on this. Set
+        // -Dlal.asm=true to enable the table.
+        boolean enabled = Boolean.getBoolean("lal.asm");
         try {
             org.apache.logging.log4j.LogManager.getLogger("lal")
-                    .info("[LAL] transformer service ACTIVE");
+                    .info("[LAL] transformer service ACTIVE, ASM hook table {}",
+                            enabled ? "ENABLED" : "disabled (Mixin carries the hooks)");
         } catch (Throwable ignored) {
         }
-        return List.of(new LALClassTransformer());
+        return enabled ? List.of(new LALClassTransformer()) : List.of();
     }
 
 }

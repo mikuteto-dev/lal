@@ -12,6 +12,7 @@ public class TargetCheck {
         boolean ok = true;
 
         // 1. Wiring: the transformation service must expose exactly the class transformer.
+        System.setProperty("lal.asm", "true");
         var service = new jp.mikumiku.lal.transformer.LALTransformationService();
         // The service now runs during launch, before any mod code, so its whole lifecycle must
         // survive being called with the early-launch arguments.
@@ -25,6 +26,11 @@ public class TargetCheck {
             ok = false;
         }
         var list = service.transformers();
+        System.clearProperty("lal.asm");
+        if (!new jp.mikumiku.lal.transformer.LALTransformationService().transformers().isEmpty()) {
+            System.out.println("FAIL: the ASM hook table must be off unless -Dlal.asm=true");
+            ok = false;
+        }
         System.out.println("transformers() size = " + list.size()
                 + " -> " + (list.isEmpty() ? "NONE (hook table dead)" : list.get(0).getClass().getSimpleName()));
         if (list.size() != 1 || !(list.get(0) instanceof jp.mikumiku.lal.transformer.LALClassTransformer)) {
